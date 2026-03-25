@@ -1,0 +1,16 @@
+Automated Fact-Checking LLM Agent
+RFC Draft · March 2025
+Overview
+The agent accepts a text claim — a headline, quote, or statistic — and returns a confidence-graded verdict (Supported, Refuted, or Not Enough Info) with cited evidence passages. Rather than a single LLM call, it operates as a multi-step reasoning pipeline driven by a set of discrete tools: the orchestrating model decides which tool to invoke at each step, accumulates evidence, and determines when enough information exists to commit to a verdict.
+The five tools are: a Claim Decomposer that breaks compound claims into atomic sub-claims; an Evidence Retriever that performs RAG over an indexed corpus; a Source Credibility Scorer that rates the reliability of each source; a Stance Classifier that labels each retrieved passage as supporting, refuting, or neutral; and a Verdict Synthesizer that aggregates these signals into a final output with a confidence score. Phase 1 targets political claims only.
+Motivation
+Misinformation spreads faster than human fact-checkers can respond. Existing automated tools tend toward one of two failure modes: classifiers that flag too aggressively and produce too many false positives to be actionable, or LLM-based systems that generate fluent, confident-sounding verdicts while hallucinating citations. A credible automated fact-checker must be accurate, traceable, and calibrated — expressing appropriate uncertainty when evidence is thin rather than confabulating support.
+Hallucination is the central risk of this system. A fact-checker that fabricates sources is not just useless but actively harmful. The design therefore prioritises abstention over fabrication: the agent is trained and evaluated to prefer returning Not Enough Info when evidence is insufficient, rather than committing to a verdict it cannot support.
+Goals
+	•	Decompose and verify compound claims against an indexed evidence corpus (FEVER + PolitiFact).
+	•	Return confidence-graded verdicts with source attribution for each sub-claim.
+	•	Keep hallucination rate below 5% — citations must correspond to retrieved passages.
+	•	Fine-tune a small language model using LoRA on claim–evidence–verdict triples.
+	•	Apply preference learning (DPO or similar) to reward well-cited, conservative verdicts over confident but unsupported ones.
+	•	Establish a reproducible evaluation baseline on FEVER (accuracy, macro F1, calibration).
+	•	Keep the system simple enough for a small team to iterate on within an 8-week window.
