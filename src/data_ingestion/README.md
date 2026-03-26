@@ -1,223 +1,179 @@
 # Task A: Data & Ingestion Module
 
-This module provides the evidence corpus infrastructure for the Fact-Checking LLM Agent.
+Owns the evidence corpus, retriever, and ground-truth triples. This document is the
+primary reference for anyone consuming Task A outputs — especially **Person B (Claim
+Processing)**, who needs the retriever and the triple files.
 
-## Overview
+---
 
-Task A is responsible for:
-- **FEVER dataset** (~185k claims) - fact verification with Wikipedia evidence
-- **PolitiFact/LIAR dataset** (~5k claims) - political fact-checking
-- **Evidence Retriever** - RAG pipeline using ChromaDB + sentence-transformers
-- **Ground-truth triples** - claim–evidence–verdict data for training
+## What is ready
 
-## Quick Start
+| Deliverable | Location | Notes |
+|-------------|----------|-------|
+| ChromaDB index | `data/index/chroma/` | 45,371 passages (32,535 FEVER + 12,836 PolitiFact) |
+| Training triples | `data/processed/train.jsonl` | 126,628 claim-evidence-verdict triples |
+| Val triples | `data/processed/val.jsonl` | 15,828 triples |
+| Test triples | `data/processed/test.jsonl` | 15,829 triples |
+| EvidenceRetriever | `src/data_ingestion/retriever/` | RAG interface over ChromaDB |
+
+---
+
+### Quick Start (first-time setup)
 
 ```bash
-# Install dependencies
+python -m venv venv
+source venv/bin/activate
+
 pip install -r requirements.txt
 
-# Download datasets (HuggingFace will cache them)
-python -m src.scripts.download_data
+# Download FEVER + LIAR datasets (HuggingFace caches automatically)
+python -m src.scripts.download_data --fever-split train --load-wiki --wiki-limit 10000
 
-# Build the ChromaDB index
-python -m src.scripts.build_index
+# Build ChromaDB index (drop --wiki-limit for the full corpus)
+python -m src.scripts.build_index --fever-full-wiki --wiki-limit 10000 --clear
 
-# Validate the corpus
-python -m src.scripts.validate_corpus
+# Sanity-check the index
+python -m src.scripts.validate_corpus --sample-queries 20
 ```
 
-## Module Structure
-
-```
-src/
-├── data_ingestion/
-│   ├── datasets/           # Dataset loaders
-│   │   ├── base.py         # Data models (Claim, Evidence, Verdict)
-│   │   ├── fever.py        # FEVER dataset loader
-│   │   └── politifact.py   # PolitiFact/LIAR loader
-│   ├── preprocessing/      # Text processing
-│   │   └── text_cleaner.py # Cleaning, chunking, sentence splitting
-│   ├── indexing/           # Vector indexing
-│   │   ├── embedder.py     # Sentence transformer embeddings
-│   │   └── chroma_index.py # ChromaDB operations
-│   ├── retriever/          # RAG interface
-│   │   └── evidence_retriever.py  # Main API for downstream
-│   └── triples/            # Training data generation
-│       └── triple_generator.py    # Export claim-evidence-verdict triples
-└── config/
-    └── settings.py         # Configuration management
-```
-
-## API Reference
-
-### EvidenceRetriever
-
-The main interface for downstream components.
+### Retrieve evidence for a claim
 
 ```python
 from src.data_ingestion import EvidenceRetriever
 
-# Initialize (lazy loads on first query)
-retriever = EvidenceRetriever()
+retriever = EvidenceRetriever()  # embedding model loads lazily on first call
 
-# Retrieve evidence for a claim
-results = retriever.retrieve("The Earth is approximately 4.5 billion years old.", top_k=5)
+results = retriever.retrieve("Nikolaj Coster-Waldau worked with Fox.", top_k=5)
 
 for r in results:
-    print(f"[{r.score:.3f}] {r.passage.text}")
-    print(f"  Source: {r.passage.source}, Dataset: {r.passage.dataset}")
-
-# Filter by dataset
-fever_results = retriever.retrieve(query, dataset_filter="fever")
-
-# Batch retrieval (more efficient for multiple queries)
-batch_results = retriever.retrieve_batch(["claim1", "claim2", "claim3"])
+    print(r.rank, r.score, r.passage.source, r.passage.text)
 ```
 
-### Data Models
+`RetrievalResult` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `r.score` | `float` | Cosine similarity, 0–1 |
+| `r.rank` | `int` | 1-indexed position in result list |
+| `r.passage.text` | `str` | Evidence sentence |
+| `r.passage.source` | `str` | Wikipedia page title or `"politifact"` |
+| `r.passage.dataset` | `str` | `"fever"` or `"politifact"` |
+| `r.passage.id` | `str` | Unique passage ID |
+| `r.passage.metadata` | `dict` | `{"sentence_id": int}` for FEVER |
+
+### Batch retrieval (preferred for multiple claims)
 
 ```python
-from src.data_ingestion.datasets import Claim, EvidencePassage, Verdict
+claims = ["claim A", "claim B", "claim C"]
+batch = retriever.retrieve_batch(claims, top_k=5)
 
-# Verdict enum
-Verdict.SUPPORTED      # Evidence supports the claim
-Verdict.REFUTED        # Evidence contradicts the claim  
-Verdict.NOT_ENOUGH_INFO  # Insufficient evidence
-
-# Evidence passage
-passage = EvidencePassage(
-    id="fever_Earth_0",
-    text="Earth is the third planet from the Sun.",
-    source="Wikipedia:Earth",
-    dataset="fever",
-    metadata={"sentence_id": 0}
-)
-
-# Claim with evidence
-claim = Claim(
-    id="fever_12345",
-    text="The Earth orbits the Sun.",
-    verdict=Verdict.SUPPORTED,
-    evidence=[passage],
-    dataset="fever"
-)
+for claim_text, claim_results in zip(claims, batch):
+    top = claim_results[0]
+    print(f"{claim_text[:60]} -> [{top.score:.3f}] {top.passage.text[:80]}")
 ```
 
-### Dataset Loaders
+### Filter by source corpus
 
 ```python
-from src.data_ingestion.datasets import FeverDataset, PolitifactDataset
+# Wikipedia evidence only (higher precision for FEVER-style claims)
+results = retriever.retrieve("claim", top_k=5, dataset_filter="fever")
 
-# Load FEVER
-fever = FeverDataset(split="train")
-fever.load()
-fever.load_wiki_pages()  # For evidence text
-
-for claim in fever.iter_claims():
-    print(f"{claim.verdict}: {claim.text}")
-
-# Load PolitiFact
-politifact = PolitifactDataset(split="train", max_samples=1000)
-politifact.load()
-print(politifact.get_statistics())
+# PolitiFact only
+results = retriever.retrieve("claim", top_k=5, dataset_filter="politifact")
 ```
 
-### Triple Generation
+### What the Stance Classifier receives
+
+Each `EvidencePassage` returned by the retriever maps directly to one item the
+Stance Classifier needs to label (supporting / refuting / neutral):
 
 ```python
-from src.data_ingestion.triples import TripleGenerator
-
-generator = TripleGenerator()
-generator.load_fever(split="train", max_samples=10000)
-generator.load_politifact(max_samples=5000)
-
-# Export for fine-tuning
-generator.export_splits("data/processed/triples/", format="jsonl")
-generator.export_parquet("data/processed/triples/all.parquet")
-
-print(generator.get_statistics())
+results = retriever.retrieve(claim_text, top_k=10)
+passages_to_classify = [(r.passage.text, r.score) for r in results]
+# pass passages_to_classify to your stance classifier
 ```
 
-### Text Preprocessing
+---
 
-```python
-from src.data_ingestion.preprocessing import clean_text, chunk_text, split_sentences
+## Training triples (for fine-tuning / Person C)
 
-# Clean text
-clean = clean_text("<p>Messy  HTML</p>")  # "Messy HTML"
-
-# Chunk for indexing
-chunks = chunk_text(long_document, chunk_size=512, chunk_overlap=50)
-
-# Split into sentences
-sentences = split_sentences(paragraph, min_length=10)
-```
-
-## Configuration
-
-Set via environment variables (prefix `FACTCHECK_`) or `.env` file:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FACTCHECK_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-| `FACTCHECK_EMBEDDING_BATCH_SIZE` | `32` | Batch size for embeddings |
-| `FACTCHECK_CHROMA_PERSIST_DIR` | `data/index/chroma` | ChromaDB storage |
-| `FACTCHECK_CHROMA_COLLECTION_NAME` | `evidence_corpus` | Collection name |
-| `FACTCHECK_DEFAULT_TOP_K` | `10` | Default retrieval count |
-| `FACTCHECK_CHUNK_SIZE` | `512` | Text chunk size |
-| `FACTCHECK_CHUNK_OVERLAP` | `50` | Chunk overlap |
-
-## Output Formats
-
-### Triple JSONL Format (for fine-tuning)
+Each line in `data/processed/train.jsonl` is a JSON object:
 
 ```json
 {
-  "claim_id": "fever_12345",
-  "claim_text": "The Earth is round.",
+  "claim_id": "fever_75397",
+  "claim_text": "Nikolaj Coster-Waldau worked with the Fox Broadcasting Company.",
   "evidence_passages": [
     {
-      "id": "fever_Earth_0",
-      "text": "Earth is an oblate spheroid...",
-      "source": "Wikipedia:Earth",
-      "dataset": "fever"
+      "id": "fever_Nikolaj_Coster-Waldau_7",
+      "text": "He had a recurring role on the short-lived Fox ...",
+      "source": "Nikolaj_Coster-Waldau",
+      "dataset": "fever",
+      "metadata": {"sentence_id": 7}
     }
   ],
   "verdict": "SUPPORTED",
   "confidence": 1.0,
-  "metadata": {"dataset": "fever", "split": "train"}
+  "metadata": {"dataset": "fever"}
 }
 ```
 
-### Retrieval Result Format
+Verdict values: `"SUPPORTED"`, `"REFUTED"`, `"NOT_ENOUGH_INFO"`.
 
-```python
-RetrievalResult(
-    passage=EvidencePassage(...),
-    score=0.87,  # Cosine similarity
-    rank=1       # 1-indexed position
-)
+`confidence` is `1.0` for FEVER (manually verified) and `0.8` for PolitiFact
+(editorial judgement, inherently more subjective).
+
+~51% of triples have at least one gold evidence passage. The remaining ~49%
+(NOT_ENOUGH_INFO claims and all PolitiFact claims) have `evidence_passages: []`.
+
+---
+
+## Module structure
+
+```
+src/data_ingestion/
+├── datasets/
+│   ├── base.py             # Claim, EvidencePassage, Verdict, ClaimEvidenceTriple
+│   ├── fever.py            # FeverDataset — loads fever/fever from HuggingFace
+│   └── politifact.py       # PolitifactDataset — loads liar from HuggingFace
+├── preprocessing/
+│   └── text_cleaner.py     # clean_text(), chunk_text(), split_sentences()
+├── indexing/
+│   ├── embedder.py         # Embedder (sentence-transformers/all-MiniLM-L6-v2)
+│   └── chroma_index.py     # ChromaIndex — add/search/clear/stats
+├── retriever/
+│   └── evidence_retriever.py  # EvidenceRetriever — the public RAG interface
+└── triples/
+    └── triple_generator.py    # TripleGenerator — export claim-evidence-verdict files
 ```
 
-## Evaluation Metrics
+---
 
-The validation script measures:
-- **Recall@k**: Proportion of relevant evidence in top-k results
-- **MRR**: Mean Reciprocal Rank of first relevant result
-- **Latency**: Query response time
+## Rebuilding the index from scratch
 
-Target: Recall@10 > 0.8 on FEVER dev set
+Only needed if the index is lost or you want a larger corpus:
 
-## Dependencies
+```bash
+# Smoke-test (fast, ~10k wiki pages)
+python -m src.scripts.download_data --fever-split train --load-wiki --wiki-limit 10000
+python -m src.scripts.build_index --fever-full-wiki --wiki-limit 10000 --clear
+python -m src.scripts.validate_corpus --sample-queries 20
 
-Core:
-- `sentence-transformers` - Embedding generation
-- `chromadb` - Vector database
-- `datasets` (HuggingFace) - Dataset loading
-- `pandas`, `pyarrow` - Data manipulation
+# Full corpus (slow, ~5.4M wiki pages)
+python -m src.scripts.download_data --fever-split train --load-wiki
+python -m src.scripts.build_index --fever-full-wiki --clear
+```
 
-Processing:
-- `beautifulsoup4`, `lxml` - HTML cleaning
-- `ftfy` - Unicode fixing
+## Configuration
 
-See `requirements.txt` for full list.
+Via environment variables (prefix `FACTCHECK_`) or a `.env` file:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FACTCHECK_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
+| `FACTCHECK_EMBEDDING_BATCH_SIZE` | `32` | Embedding batch size |
+| `FACTCHECK_CHROMA_PERSIST_DIR` | `data/index/chroma` | ChromaDB storage path |
+| `FACTCHECK_CHROMA_COLLECTION_NAME` | `evidence_corpus` | Collection name |
+| `FACTCHECK_DEFAULT_TOP_K` | `10` | Default number of results |
+| `FACTCHECK_CHUNK_SIZE` | `512` | Text chunk size (chars) |
+| `FACTCHECK_CHUNK_OVERLAP` | `50` | Chunk overlap (chars) |
