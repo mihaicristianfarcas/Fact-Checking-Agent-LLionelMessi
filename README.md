@@ -42,8 +42,8 @@ The system operates as a tool-augmented LLM pipeline with five discrete tools:
 
 ## Datasets
 
-- **[FEVER](https://fever.ai/)** - Fact Extraction and VERification dataset
-- **[PolitiFact](https://www.politifact.com/)** - Political fact-checking database
+- **[FEVER](https://fever.ai/)** - Fact Extraction and VERification dataset (~185k claims)
+- **[PolitiFact/LIAR](https://www.politifact.com/)** - Political fact-checking database (~5k claims)
 
 ## Evaluation Metrics
 
@@ -51,4 +51,70 @@ The system operates as a tool-augmented LLM pipeline with five discrete tools:
 - **Macro F1** - Balanced performance across verdict classes
 - **Calibration** - Confidence scores reflect actual accuracy
 - **Hallucination Rate** - Target: < 5%
+
+---
+
+## Task A: Data & Ingestion Module
+
+### Quick Start
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Download datasets and build index
+python -m src.scripts.download_data
+python -m src.scripts.build_index
+
+# Validate the corpus
+python -m src.scripts.validate_corpus
+```
+
+### Using the Evidence Retriever
+
+```python
+from src.data_ingestion import EvidenceRetriever
+
+# Initialize retriever (lazy loads on first query)
+retriever = EvidenceRetriever()
+
+# Retrieve evidence for a claim
+results = retriever.retrieve("The Earth is round", top_k=5)
+for r in results:
+    print(f"{r.rank}. [{r.score:.3f}] {r.passage.text[:100]}...")
+
+# Filter by dataset
+fever_results = retriever.retrieve("claim text", dataset_filter="fever")
+
+# Batch retrieval for efficiency
+batch_results = retriever.retrieve_batch(["claim1", "claim2", "claim3"])
+```
+
+### Project Structure
+
+```
+src/
+├── data_ingestion/
+│   ├── datasets/          # FEVER & PolitiFact loaders
+│   ├── preprocessing/     # Text cleaning & chunking
+│   ├── indexing/          # ChromaDB indexing pipeline
+│   ├── retriever/         # Evidence Retriever (RAG)
+│   └── triples/           # Ground-truth triple generation
+├── config/                # Configuration management
+└── scripts/               # CLI tools
+```
+
+### Configuration
+
+Configure via environment variables (prefix `FACTCHECK_`) or `.env` file:
+
+```bash
+FACTCHECK_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+FACTCHECK_CHROMA_PERSIST_DIR=data/index/chroma
+FACTCHECK_DEFAULT_TOP_K=10
+```
 
