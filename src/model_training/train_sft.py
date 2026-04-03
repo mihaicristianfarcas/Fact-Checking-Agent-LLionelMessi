@@ -86,7 +86,6 @@ def main(args):
         save_strategy="epoch",  # Saves backup once exactly at the end
         optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
         dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
-        max_seq_length=1024,      # Caps extreme padding from slowing down attention matrix
         fp16=True,
         bf16=False,
         use_cpu=not has_cuda,
@@ -105,6 +104,7 @@ def main(args):
         peft_config=peft_config,
         processing_class=tokenizer,
         args=training_args,
+        max_seq_length=1024,
     )
 
     # Note: TRL uses the model's chat template automatically if "messages" key exists.

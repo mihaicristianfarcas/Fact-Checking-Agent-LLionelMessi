@@ -125,8 +125,6 @@ def main(args):
         remove_unused_columns=False, # Required for DPO Trainer
         optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
         dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
-        max_length=1024,          # Caps extreme padding from slowing down attention matrix
-        max_prompt_length=512,
         fp16=True,
         bf16=False,
         use_cpu=not has_cuda,
@@ -145,6 +143,8 @@ def main(args):
         train_dataset=train_dataset,
         processing_class=tokenizer,
         args=training_args,
+        max_length=1024,
+        max_prompt_length=512,
     )
     
     logger.info("Starting DPO training...")
