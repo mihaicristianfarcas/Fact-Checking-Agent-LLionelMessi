@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def main(args):
-    model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     logger.info(f"Using base model: {model_id}")
 
     # Check hardware
@@ -43,7 +43,8 @@ def main(args):
             quantization_config=bnb_config,
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.float16
+            torch_dtype=torch.float16,
+            attn_implementation="sdpa" # Native PyTorch flash-attention alternative
         )
         model = prepare_model_for_kbit_training(model)
     else:
@@ -81,14 +82,12 @@ def main(args):
         logging_steps=10,
         max_steps=args.max_steps if args.max_steps else -1,
         num_train_epochs=args.epochs if not args.max_steps else 1,
-        eval_strategy="steps",
-        eval_steps=400,
-        save_strategy="steps",
-        save_steps=400,
+        eval_strategy="epoch",  # Evaluates once exactly at the end
+        save_strategy="epoch",  # Saves backup once exactly at the end
         optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
         dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
         max_seq_length=1024,      # Caps extreme padding from slowing down attention matrix
-        fp16=False,
+        fp16=True,
         bf16=False,
         use_cpu=not has_cuda,
         report_to="none", # Turn off wandb for local debug
@@ -97,20 +96,7 @@ def main(args):
 
     # SFT Trainer
     
-    # ---------------------------
-    # CRITICAL COLAB T4 FIX: 
-    # Qwen natively forces some weights (like PEFT parameters or unquantized heads) 
-    # to bfloat16. T4 GPUs cannot do math on bfloat16. We MUST downcast them securely.
-    for name, param in model.named_parameters():
-        if param.dtype == torch.bfloat16:
-            param.data = param.data.to(torch.float16)
-    for name, buffer in model.named_buffers():
-        if buffer.dtype == torch.bfloat16:
-            buffer.data = buffer.data.to(torch.float16)
-    if hasattr(model, "config") and hasattr(model.config, "torch_dtype"):
-        if model.config.torch_dtype == torch.bfloat16:
-            model.config.torch_dtype = torch.float16
-    # ---------------------------
+    
     
     trainer = SFTTrainer(
         model=model,

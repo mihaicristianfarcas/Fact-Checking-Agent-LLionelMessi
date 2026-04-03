@@ -22,7 +22,7 @@ def main(args):
     # For DPO, we technically need a reference model and an active model.
     # TRL's DPOTrainer can automatically handle the reference model by deeply cloning the active model before training starts if you don't provide one.
     
-    model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     adapter_dir = "./models/fact_checker_sft"
     logger.info(f"Using base model: {model_id} and SFT adapter from {adapter_dir}")
 
@@ -127,7 +127,7 @@ def main(args):
         dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
         max_length=1024,          # Caps extreme padding from slowing down attention matrix
         max_prompt_length=512,
-        fp16=False,
+        fp16=True,
         bf16=False,
         use_cpu=not has_cuda,
         report_to="none",
@@ -137,20 +137,7 @@ def main(args):
     # DPO Trainer
     logger.info("Initializing DPO Trainer...")
     
-    # ---------------------------
-    # CRITICAL COLAB T4 FIX: 
-    # Qwen natively forces some weights (like PEFT parameters or unquantized heads) 
-    # to bfloat16. T4 GPUs cannot do math on bfloat16. We MUST downcast them securely.
-    for name, param in model.named_parameters():
-        if param.dtype == torch.bfloat16:
-            param.data = param.data.to(torch.float16)
-    for name, buffer in model.named_buffers():
-        if buffer.dtype == torch.bfloat16:
-            buffer.data = buffer.data.to(torch.float16)
-    if hasattr(model, "config") and hasattr(model.config, "torch_dtype"):
-        if model.config.torch_dtype == torch.bfloat16:
-            model.config.torch_dtype = torch.float16
-    # ---------------------------
+    
     
     trainer = DPOTrainer(
         model=model,
