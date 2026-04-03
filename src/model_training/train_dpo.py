@@ -49,7 +49,8 @@ def main(args):
             model_id,
             quantization_config=bnb_config,
             device_map="auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            torch_dtype=torch.float16
         )
         model = prepare_model_for_kbit_training(model)
     else:
@@ -115,15 +116,18 @@ def main(args):
     output_dir = "./models/fact_checker_dpo"
     training_args = DPOConfig(
         output_dir=output_dir,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=8,
         learning_rate=1e-5, # DPO learning rate is usually lower than SFT
         logging_steps=10,
         max_steps=args.max_steps if args.max_steps else -1,
         num_train_epochs=args.epochs if not args.max_steps else 1,
         remove_unused_columns=False, # Required for DPO Trainer
-        optim="adamw_torch",
-        fp16=has_cuda,
+        optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
+        dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
+        max_length=1024,          # Caps extreme padding from slowing down attention matrix
+        max_prompt_length=512,
+        fp16=False,
         bf16=False,
         use_cpu=not has_cuda,
         report_to="none",
@@ -132,6 +136,22 @@ def main(args):
 
     # DPO Trainer
     logger.info("Initializing DPO Trainer...")
+    
+    # ---------------------------
+    # CRITICAL COLAB T4 FIX: 
+    # Qwen natively forces some weights (like PEFT parameters or unquantized heads) 
+    # to bfloat16. T4 GPUs cannot do math on bfloat16. We MUST downcast them securely.
+    for name, param in model.named_parameters():
+        if param.dtype == torch.bfloat16:
+            param.data = param.data.to(torch.float16)
+    for name, buffer in model.named_buffers():
+        if buffer.dtype == torch.bfloat16:
+            buffer.data = buffer.data.to(torch.float16)
+    if hasattr(model, "config") and hasattr(model.config, "torch_dtype"):
+        if model.config.torch_dtype == torch.bfloat16:
+            model.config.torch_dtype = torch.float16
+    # ---------------------------
+    
     trainer = DPOTrainer(
         model=model,
         ref_model=None, # TRL will implicitly handle the reference model using PEFT adapters
