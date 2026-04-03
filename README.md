@@ -6,8 +6,6 @@ An intelligent multi-step reasoning pipeline that verifies claims by decomposing
 
 This agent accepts text claims — headlines, quotes, or statistics — and returns a confidence-graded verdict (**Supported**, **Refuted**, or **Not Enough Info**) with cited evidence passages. Rather than relying on a single LLM call, it operates as a multi-step reasoning pipeline where the orchestrating model decides which tool to invoke at each step, accumulates evidence, and determines when enough information exists to commit to a verdict.
 
-**Phase 1 Focus:** Political claims
-
 ## Motivation
 
 Misinformation spreads faster than human fact-checkers can respond. Existing automated tools suffer from two failure modes:
@@ -56,16 +54,18 @@ The system operates as a tool-augmented LLM pipeline with five discrete tools:
 
 ## Task A: Data & Ingestion — Status
 
-> **Done.** Corpus indexed, retriever operational, training triples exported.
-> One RFC deliverable outstanding: the evaluation baseline script (FEVER dev-set accuracy/F1/calibration) has not yet been written.
+> **Done.** Corpus indexed, retriever operational, training triples exported, evaluation baseline script written.
+> **Important:** `data/index/` is gitignored. Clone users must run the full-wiki download + build steps below before the retriever will return meaningful results.
 
 ### Corpus at a glance
 
 | Dataset | Claims | Passages in index |
 |---------|--------|-------------------|
-| FEVER (train) | 145,449 | 32,535 Wikipedia sentences |
+| FEVER (train) | 145,449 | 662,806 Wikipedia chunks (262,993 political pages) |
 | LIAR/PolitiFact | 12,836 | 12,836 claim texts |
-| **Total** | **158,285** | **45,371** |
+| **Total** | **158,285** | **675,642** |
+
+The index uses a political keyword filter over the full FEVER Wikipedia dump (~5.4M pages). Only pages with politically relevant titles (politician roles, government institutions, elections, policy topics, etc.) are retained (~263k pages, ~4.9% of the dump), then chunked into ~500-character overlapping passages. This gives broad evidence coverage for political claims without the impractical cost of indexing all 25M Wikipedia sentences.
 
 Training triples for fine-tuning are in `data/processed/`:
 
@@ -77,17 +77,22 @@ Training triples for fine-tuning are in `data/processed/`:
 
 ### Quick Start (first-time setup)
 
+> **Note:** `data/index/` is gitignored — the ChromaDB index is not stored in the repository. Every team member must build it locally.
+
 ```bash
 python -m venv venv
 source venv/bin/activate
 
 pip install -r requirements.txt
 
-# Download FEVER + LIAR datasets (HuggingFace caches automatically)
-python -m src.scripts.download_data --fever-split train --load-wiki --wiki-limit 5000
+# Download FEVER + LIAR datasets and the full Wikipedia corpus
+# (~30–60 min depending on bandwidth; HuggingFace caches on disk)
+python -m src.scripts.download_data --fever-split train --load-wiki
 
-# Build ChromaDB index (drop --wiki-limit for the full corpus)
-python -m src.scripts.build_index --fever-full-wiki --wiki-limit 5000 --clear
+# Build the ChromaDB index with political keyword filter (~20–40 min)
+# Streams all Wikipedia pages, keeps politically relevant ones,
+# chunks full page content into ~500-char passages.
+python -m src.scripts.build_index --political-filter --clear
 
 # Sanity-check the index
 python -m src.scripts.validate_corpus --sample-queries 20

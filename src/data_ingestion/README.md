@@ -10,7 +10,7 @@ Processing)**, who needs the retriever and the triple files.
 
 | Deliverable | Location | Notes |
 |-------------|----------|-------|
-| ChromaDB index | `data/index/chroma/` | 45,371 passages (32,535 FEVER + 12,836 PolitiFact) |
+| ChromaDB index | `data/index/chroma/` | 675,642 passages (662,806 Wikipedia chunks + 12,836 PolitiFact) |
 | Training triples | `data/processed/train.jsonl` | 126,628 claim-evidence-verdict triples |
 | Val triples | `data/processed/val.jsonl` | 15,828 triples |
 | Test triples | `data/processed/test.jsonl` | 15,829 triples |
@@ -20,17 +20,23 @@ Processing)**, who needs the retriever and the triple files.
 
 ### Quick Start (first-time setup)
 
+> **The index is not in the repository.** `data/index/` is listed in `.gitignore`, so you must build it yourself.
+
 ```bash
 python -m venv venv
 source venv/bin/activate
 
 pip install -r requirements.txt
 
-# Download FEVER + LIAR datasets (HuggingFace caches automatically)
-python -m src.scripts.download_data --fever-split train --load-wiki --wiki-limit 10000
+# Download FEVER + LIAR datasets and the full Wikipedia corpus
+# (~30–60 min depending on bandwidth; HuggingFace caches on disk automatically)
+python -m src.scripts.download_data --fever-split train --load-wiki
 
-# Build ChromaDB index (drop --wiki-limit for the full corpus)
-python -m src.scripts.build_index --fever-full-wiki --wiki-limit 10000 --clear
+# Build the ChromaDB index using the political keyword filter (recommended)
+# Streams all 5.4M wiki pages, keeps only those with politically relevant titles,
+# chunks their full content into ~500-char passages, and indexes those.
+# Takes ~25 min; produces 675,642 passages (263k pages matched out of 5.4M).
+python -m src.scripts.build_index --political-filter --clear
 
 # Sanity-check the index
 python -m src.scripts.validate_corpus --sample-queries 20
@@ -151,18 +157,29 @@ src/data_ingestion/
 
 ## Rebuilding the index from scratch
 
-Only needed if the index is lost or you want a larger corpus:
-
 ```bash
-# Smoke-test (fast, ~10k wiki pages)
-python -m src.scripts.download_data --fever-split train --load-wiki --wiki-limit 10000
-python -m src.scripts.build_index --fever-full-wiki --wiki-limit 10000 --clear
+# Recommended: politically-filtered Wikipedia chunks + PolitiFact (~20–40 min)
+python -m src.scripts.download_data --fever-split train --load-wiki
+python -m src.scripts.build_index --political-filter --clear
 python -m src.scripts.validate_corpus --sample-queries 20
 
-# Full corpus (slow, ~5.4M wiki pages)
-python -m src.scripts.download_data --fever-split train --load-wiki
-python -m src.scripts.build_index --fever-full-wiki --clear
+# Smoke-test only (checks pipeline wiring; no --wiki-limit support with --political-filter,
+# so use the default mode for fast smoke tests)
+python -m src.scripts.download_data --fever-split train --load-wiki --wiki-limit 10000
+python -m src.scripts.build_index --clear
 ```
+
+### Index strategy notes
+
+| Mode | Flag | Passages | Use case |
+|------|------|----------|----------|
+| Cited evidence only | *(default)* | ~32k | Smoke-test / evaluation only |
+| Political keyword filter | `--political-filter` | ~hundreds of thousands | **Recommended for inference** |
+| Full Wikipedia dump | `--fever-full-wiki` | ~25M | Impractical — do not use |
+
+The default mode indexes only the Wikipedia sentences that FEVER annotators manually cited. This is fine for evaluating retrieval recall against gold labels, but too narrow for real inference: any claim about a topic not covered by those ~32k sentences will return irrelevant results.
+
+The `--political-filter` mode streams all 5.4M Wikipedia pages, keeps those whose titles contain political keywords (politician roles, institutions, elections, policy topics, etc.), and chunks each matched page into ~500-character overlapping passages. This gives broad coverage for political claims without the impractical cost of indexing all 25M Wikipedia sentences.
 
 ## Configuration
 
