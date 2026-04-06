@@ -1,9 +1,9 @@
 # Milestones
 
-Project name: Automated Fact-Checking LLM Agent
-Github repository: https://github.com/mihaicristianfarcas/Fact-Checking-Agent-LLionelMessi.git
-Team name: LLionelMessi
-Team members and their respective group: Mihai-Cristian Farcaș (933), David Croitor (933), Vasile Drăguța (933), Andrei Ungureanu (937)
+#### Project name: Automated Fact-Checking LLM Agent
+#### Github repository: https://github.com/mihaicristianfarcas/Fact-Checking-Agent-LLionelMessi.git
+#### Team name: LLionelMessi
+#### Team members and their respective group: Mihai-Cristian Farcaș (933), David Croitor (933), Vasile Drăguța (933), Andrei Ungureanu (937)
 
 ## 1. Data & Ingestion — Implementation Report
 
