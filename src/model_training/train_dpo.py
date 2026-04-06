@@ -142,7 +142,7 @@ def main(args):
         ref_model=None, # TRL will implicitly handle the reference model using PEFT adapters
         train_dataset=train_dataset,
         processing_class=tokenizer,
-        args=training_args,
+        args=training_args
     )
     
     logger.info("Starting DPO training...")
