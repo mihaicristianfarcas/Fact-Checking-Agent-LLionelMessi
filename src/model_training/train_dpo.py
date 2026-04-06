@@ -125,11 +125,11 @@ def main(args):
         remove_unused_columns=False, # Required for DPO Trainer
         optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
         dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
-        fp16=True,
+        fp16=False, # Disable GradScaler to bypass TinyLlama bfloat16 poisoning
         bf16=False,
         use_cpu=not has_cuda,
         report_to="none",
-        beta=0.1 # KL penalty
+        beta=0.4 # Increased KL penalty to more aggressively punish hallucinations
     )
 
     # DPO Trainer
@@ -155,7 +155,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max_samples", type=int, default=500, help="Limit number of dataset samples for debugging")
+    parser.add_argument("--max_samples", type=int, default=2000, help="Limit number of dataset samples for debugging")
     parser.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
     parser.add_argument("--max_steps", type=int, default=None, help="Override epochs with max steps")
     args = parser.parse_args()

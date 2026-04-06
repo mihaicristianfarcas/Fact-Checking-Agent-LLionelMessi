@@ -29,9 +29,10 @@ def fact_checker_pipeline():
     
     # 1. Load Base Model
     base_model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen2.5-0.5B-Instruct",
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         device_map="auto" if has_cuda else "cpu",
-        torch_dtype=torch.float16 if has_cuda else torch.float32
+        torch_dtype=torch.float16 if has_cuda else torch.float32,
+        trust_remote_code=True
     )
     
     # 2. Append Custom Model Weights (LoRA)

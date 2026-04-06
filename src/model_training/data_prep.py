@@ -95,11 +95,24 @@ def prepare_dpo_dataset(input_filepath: str | Path, max_samples: int = None) -> 
         
         user_text = build_user_prompt(claim, evidence)
         
-        # We only generate pairs if we can easily craft a "bad" response.
-        # Simplest approach: When the right answer is NOT_ENOUGH_INFO, the model shouldn't hallucinate it's SUPPORTED.
+        # We only generate pairs if we can craft a "bad" response.
+        # 1. Hallucinated Support Failure: When the answer is NEI, punish "Expert Guessing"
         if verdict == "NOT_ENOUGH_INFO":
             chosen = build_assistant_response(verdict, evidence)
             rejected = "Verdict: SUPPORTED\nExplanation: The claim is definitely true because the context implies it. [hallucinated_source_1]"
+            
+            dpo_data.append({
+                "system": SYSTEM_PROMPT,
+                "prompt": user_text,
+                "chosen": [{"role": "assistant", "content": chosen}],
+                "rejected": [{"role": "assistant", "content": rejected}]
+            })
+        
+        # 2. Negation Failure: When the answer is REFUTED, punish "Blind Agreement"
+        elif verdict == "REFUTED":
+            chosen = build_assistant_response(verdict, evidence)
+            # Create a "Lazy" rejected response that says supported just because keywords matched
+            rejected = "Verdict: SUPPORTED\nExplanation: The claim is supported because the evidence mentions the subject. [unknown_id]"
             
             dpo_data.append({
                 "system": SYSTEM_PROMPT,

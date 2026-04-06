@@ -86,7 +86,7 @@ def main(args):
         save_strategy="epoch",  # Saves backup once exactly at the end
         optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
         dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
-        fp16=True,
+        fp16=False, # <-- MUST BE FALSE. Disable GradScaler to bypass TinyLlama config.json bfloat16 poisoning
         bf16=False,
         use_cpu=not has_cuda,
         report_to="none", # Turn off wandb for local debug
