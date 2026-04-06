@@ -143,8 +143,6 @@ def main(args):
         train_dataset=train_dataset,
         processing_class=tokenizer,
         args=training_args,
-        max_length=1024,
-        max_prompt_length=512,
     )
     
     logger.info("Starting DPO training...")

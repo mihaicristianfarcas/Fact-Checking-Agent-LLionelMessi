@@ -95,16 +95,13 @@ def main(args):
 
     # SFT Trainer
     
-    
-    
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         peft_config=peft_config,
         processing_class=tokenizer,
-        args=training_args,
-        max_seq_length=1024,
+        args=training_args
     )
 
     # Note: TRL uses the model's chat template automatically if "messages" key exists.
