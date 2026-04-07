@@ -26,17 +26,24 @@ def main(args):
     adapter_dir = "./models/fact_checker_sft"
     logger.info(f"Using base model: {model_id} and SFT adapter from {adapter_dir}")
 
-    # Check hardware
+    # Check hardware — CUDA > MPS (Apple Silicon) > CPU
     has_cuda = torch.cuda.is_available()
-    device = "cuda" if has_cuda else "cpu"
+    has_mps = torch.backends.mps.is_available()
+    if has_cuda:
+        device = "cuda"
+    elif has_mps:
+        device = "mps"
+    else:
+        device = "cpu"
+    logger.info(f"Hardware detection: CUDA={has_cuda}, MPS={has_mps} → using {device.upper()}")
 
     if not os.path.exists(adapter_dir):
         logger.warning(f"SFT adapter not found at {adapter_dir}. DPO should ideally be run AFTER SFT.")
-        
+
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Setup Quantization if CUDA is available, otherwise load normally
+    # Setup model loading — 4-bit QLoRA on CUDA, fp16 on MPS, fp32 on CPU
     if has_cuda:
         logger.info("CUDA detected. Loading model in 4-bit...")
         bnb_config = BitsAndBytesConfig(
@@ -53,8 +60,16 @@ def main(args):
             torch_dtype=torch.float16
         )
         model = prepare_model_for_kbit_training(model)
+    elif has_mps:
+        logger.info("MPS (Apple Silicon) detected. Loading model in fp16...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            device_map={"": device},
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+        )
     else:
-        logger.warning("No CUDA detected. Loading model in standard precision.")
+        logger.warning("No GPU detected. Loading model in fp32. Training will be slow!")
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="cpu",
@@ -79,14 +94,16 @@ def main(args):
     logger.info("Loading DPO dataset...")
     # DPOTrainer requires specific columns: prompt, chosen, rejected
     train_dataset = prepare_dpo_dataset("data/processed/train.jsonl", max_samples=args.max_samples)
-    
+    val_max = min(args.max_samples // 5, 2000) if args.max_samples else 2000
+    val_dataset_raw = prepare_dpo_dataset("data/processed/val.jsonl", max_samples=val_max)
+
     # We must apply chat template to the datasets for DPO since DPO trainer needs raw strings, not message lists
     def apply_template(examples):
         # examples is a batched dict, we process row by row
         prompts = []
         chosens = []
         rejecteds = []
-        
+
         for sys_msg, usr_prompt, chosen_msg, rejected_msg in zip(examples['system'], examples['prompt'], examples['chosen'], examples['rejected']):
             # Build the chat for prompt
             prompt_chat = [
@@ -94,22 +111,27 @@ def main(args):
                 {"role": "user", "content": usr_prompt}
             ]
             prompt_str = tokenizer.apply_chat_template(prompt_chat, tokenize=False, add_generation_prompt=True)
-            
+
             # DPOTrainer expects JUST the assistant response for chosen/rejected, not the whole conversation
             chosen_str = chosen_msg[0]['content'] + tokenizer.eos_token
             rejected_str = rejected_msg[0]['content'] + tokenizer.eos_token
-            
+
             prompts.append(prompt_str)
             chosens.append(chosen_str)
             rejecteds.append(rejected_str)
-            
+
         return {"prompt": prompts, "chosen": chosens, "rejected": rejecteds}
 
     # Remove original columns to keep only the 3 required by DPO
     train_dataset = train_dataset.map(
-        apply_template, 
-        batched=True, 
+        apply_template,
+        batched=True,
         remove_columns=train_dataset.column_names
+    )
+    val_dataset = val_dataset_raw.map(
+        apply_template,
+        batched=True,
+        remove_columns=val_dataset_raw.column_names
     )
 
     # Training Arguments
@@ -122,25 +144,26 @@ def main(args):
         logging_steps=10,
         max_steps=args.max_steps if args.max_steps else -1,
         num_train_epochs=args.epochs if not args.max_steps else 1,
+        eval_strategy="epoch",
         remove_unused_columns=False, # Required for DPO Trainer
         optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
-        dataloader_num_workers=2, # Streams data from CPU to GPU in parallel
+        # dataloader workers: GPU pipelining only helps when CUDA is available.
+        dataloader_num_workers=2 if has_cuda else 0,
         fp16=False, # Disable GradScaler to bypass TinyLlama bfloat16 poisoning
         bf16=False,
-        use_cpu=not has_cuda,
+        use_cpu=device == "cpu",
         report_to="none",
         beta=0.4 # Increased KL penalty to more aggressively punish hallucinations
     )
 
     # DPO Trainer
     logger.info("Initializing DPO Trainer...")
-    
-    
-    
+
     trainer = DPOTrainer(
         model=model,
-        ref_model=None, # TRL will implicitly handle the reference model using PEFT adapters
+        ref_model=None, # TRL uses PEFT adapter disable/enable to derive the reference model implicitly
         train_dataset=train_dataset,
+        eval_dataset=val_dataset,
         processing_class=tokenizer,
         args=training_args
     )

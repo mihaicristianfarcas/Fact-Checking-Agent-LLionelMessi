@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=512)
     chunk_overlap: int = Field(default=50)
 
+    # Stance Classifier
+    stance_confidence_threshold: float = Field(default=0.50)
+
     # Logging
     log_level: str = Field(default="INFO")
 
