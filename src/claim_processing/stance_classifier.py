@@ -45,6 +45,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from src.claim_processing.text_cleaner import clean_passages_in_retrieval_results
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,8 @@ class StanceLabel(str, Enum):
 
 
 # Threshold below which we downgrade a predicted label to NEUTRAL.
-# Prevents low-confidence SUPPORTING/REFUTING labels from polluting the
-# aggregate signal.  Tune on your val.jsonl.
-_CONFIDENCE_THRESHOLD = 0.50
+# Configurable via FACTCHECK_STANCE_CONFIDENCE_THRESHOLD env var or .env file.
+_CONFIDENCE_THRESHOLD = settings.stance_confidence_threshold
 
 # Default HuggingFace model for NLI
 _DEFAULT_MODEL_NAME = "cross-encoder/nli-deberta-v3-base"

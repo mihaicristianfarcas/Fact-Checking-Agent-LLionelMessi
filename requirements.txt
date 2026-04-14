@@ -48,3 +48,10 @@ rich>=13.0.0
 ollama>=0.1.0
 scikit-learn>=1.2.0
 transformers>=4.30.0
+
+# Model Training (Task C)
+peft>=0.7.0
+trl>=0.7.0
+accelerate>=0.21.0
+bitsandbytes>=0.41.0
+wandb>=0.15.0
