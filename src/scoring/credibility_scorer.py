@@ -77,6 +77,8 @@ class CredibilityScorer:
         self.rank_decay = rank_decay
 
         total = retrieval_weight + stance_weight + prior_weight + rank_weight
+        if total <= 0:
+            raise ValueError("Sum of credibility weights must be positive.")
         self.w_retrieval = retrieval_weight / total
         self.w_stance = stance_weight / total
         self.w_prior = prior_weight / total

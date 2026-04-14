@@ -81,7 +81,7 @@ class SynthesisResult:
 
     @property
     def citation_present(self) -> bool:
-        """True if at least one citation exists for non-NEI verdicts."""
+        """NEI verdicts are exempt; otherwise True when at least one citation exists."""
         if self.verdict == VERDICT_NEI:
             return True
         return len(self.cited_passage_ids) > 0
@@ -141,7 +141,14 @@ class VerdictSynthesizer:
         Returns:
             SynthesisResult with verdict, confidence, explanation, and citations.
         """
+        if len(atomic_texts) != len(stance_results):
+            raise ValueError(
+                f"atomic_texts ({len(atomic_texts)}) and stance_results "
+                f"({len(stance_results)}) must have the same length."
+            )
+
         all_retrieved_ids: list[str] = []
+        _retrieved_set: set[str] = set()
         atomic_verdicts: list[AtomicVerdict] = []
 
         for text, sr in zip(atomic_texts, stance_results):
@@ -149,7 +156,8 @@ class VerdictSynthesizer:
 
             for sp in scored:
                 pid = sp.stance.passage_id
-                if pid not in all_retrieved_ids:
+                if pid not in _retrieved_set:
+                    _retrieved_set.add(pid)
                     all_retrieved_ids.append(pid)
 
             av = self._atomic_verdict(text, sr, scored)

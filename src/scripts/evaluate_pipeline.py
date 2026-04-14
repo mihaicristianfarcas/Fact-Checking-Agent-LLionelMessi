@@ -33,7 +33,6 @@ from loguru import logger
 from sklearn.metrics import classification_report, confusion_matrix
 
 from src.agent.orchestrator import FactCheckAgent
-from src.config import settings
 
 
 LABEL_MAP = {
@@ -153,7 +152,7 @@ def main():
             confidences.append(0.0)
             correct_flags.append(claim_data["label"] == "NOT_ENOUGH_INFO")
             hallucination_flags.append(False)
-            citation_missing_flags.append(True)
+            citation_missing_flags.append(False)
             continue
 
         gold = claim_data["label"]

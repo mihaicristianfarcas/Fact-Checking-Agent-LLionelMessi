@@ -7,9 +7,7 @@ Run with:
     pytest tests/test_orchestrator.py -v
 """
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.agent.orchestrator import FactCheckAgent, PipelineTrace
 from src.claim_processing.decomposer import (

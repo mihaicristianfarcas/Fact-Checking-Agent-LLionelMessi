@@ -3,19 +3,19 @@ Fact-Checking Agent Orchestrator.
 
 Runs the full pipeline:
 
-    claim → decompose → retrieve → stance → credibility → synthesize
+    claim → decompose → retrieve → stance classify → synthesize (with credibility scoring)
 
 The orchestrator owns the "agent loop" described in the RFC.  It coordinates
-all five tools (decomposer, retriever, credibility scorer, stance classifier,
-verdict synthesizer) and produces a fully-traced result.
+decomposition, retrieval, stance classification, and synthesis (which
+internally applies credibility scoring) and produces a fully-traced result.
 
 Two execution modes:
     1. **Deterministic** (default) — runs the fixed pipeline in order.
        Safest, fastest, and always reproducible.
-    2. **Adaptive** — uses lightweight heuristics to decide whether to
-       skip decomposition (short claims) or retrieve extra evidence
-       (low retrieval scores).  No LLM router; just rule-based branching
-       that still produces identical traces for identical inputs.
+    2. **Adaptive** — uses lightweight heuristics to retrieve extra
+       evidence when initial retrieval scores are low.  No LLM router;
+       just rule-based branching that still produces identical traces
+       for identical inputs.
 
 The PipelineTrace captures every intermediate result so downstream
 evaluation and debugging can inspect exactly what happened.

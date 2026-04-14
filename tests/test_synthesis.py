@@ -8,7 +8,6 @@ Run with:
 from src.synthesis.verdict_synthesizer import (
     VerdictSynthesizer,
     SynthesisResult,
-    AtomicVerdict,
     VERDICT_SUPPORTED,
     VERDICT_REFUTED,
     VERDICT_NEI,
@@ -18,7 +17,6 @@ from src.claim_processing.stance_classifier import (
     StanceResult,
     PassageStance,
 )
-from src.scoring.credibility_scorer import CredibilityScorer
 
 
 def _ps(
