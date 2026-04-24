@@ -84,6 +84,14 @@ def main(args):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
+    # TinyLlama's config.json declares torch_dtype=bfloat16, so LoRA params
+    # inherit bf16 even when the base model is loaded in fp16/4-bit.  Cast all
+    # trainable params to fp16 so gradient computation stays in fp16 throughout.
+    if has_cuda:
+        for param in model.parameters():
+            if param.requires_grad and param.dtype == torch.bfloat16:
+                param.data = param.data.to(torch.float16)
+
     # Load Dataset
     logger.info("Loading SFT dataset...")
     train_dataset = prepare_sft_dataset("data/processed/train.jsonl", tokenizer=tokenizer, max_samples=args.max_samples)
@@ -110,8 +118,8 @@ def main(args):
         dataloader_num_workers=2 if has_cuda else 0,
         # pin_memory is not supported on MPS and triggers a warning.
         dataloader_pin_memory=has_cuda,
-        fp16=has_cuda,  # Safe with QLoRA; bf16 is the problematic one (TinyLlama config.json)
-        bf16=False,
+        fp16=False,  # Must stay False — TinyLlama config.json inits LoRA params as bf16,
+        bf16=False,  # and GradScaler can't unscale bf16 grads. We cast params to fp16 below instead.
         use_cpu=device == "cpu",
         report_to="none", # Turn off wandb for local debug
         # Explicit context length — TinyLlama supports 2048; evidence prompts can be long.

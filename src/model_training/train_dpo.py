@@ -91,6 +91,14 @@ def main(args):
         )
         model = get_peft_model(model, peft_config)
 
+    # TinyLlama's config.json declares torch_dtype=bfloat16, so LoRA params
+    # inherit bf16 even when the base model is loaded in fp16/4-bit.  Cast all
+    # trainable params to fp16 so gradient computation stays in fp16 throughout.
+    if has_cuda:
+        for param in model.parameters():
+            if param.requires_grad and param.dtype == torch.bfloat16:
+                param.data = param.data.to(torch.float16)
+
     # Load Dataset
     logger.info("Loading DPO dataset...")
     # DPOTrainer requires specific columns: prompt, chosen, rejected
@@ -154,8 +162,8 @@ def main(args):
         dataloader_num_workers=2 if has_cuda else 0,
         # pin_memory is not supported on MPS and triggers a warning.
         dataloader_pin_memory=has_cuda,
-        fp16=has_cuda,  # Safe with QLoRA; bf16 is the problematic one (TinyLlama config.json)
-        bf16=False,
+        fp16=False,  # Must stay False — TinyLlama config.json inits LoRA params as bf16,
+        bf16=False,  # and GradScaler can't unscale bf16 grads. We cast params to fp16 below instead.
         use_cpu=device == "cpu",
         report_to="none",
         beta=0.4 # Increased KL penalty to more aggressively punish hallucinations
