@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 from pathlib import Path
 from typing import List, Dict, Any
 from datasets import Dataset
@@ -74,6 +75,8 @@ def prepare_sft_dataset(input_filepath: str | Path, tokenizer=None, max_samples:
     logger.info(f"After evidence filter: {len(raw_data)} samples retained.")
 
     if max_samples:
+        random.seed(42)
+        random.shuffle(raw_data)
         raw_data = raw_data[:max_samples]
 
     formatted_data = []
@@ -139,6 +142,8 @@ def prepare_dpo_dataset(input_filepath: str | Path, max_samples: int = None) -> 
     logger.info(f"DPO — after evidence filter: {len(raw_data)} samples retained.")
 
     if max_samples:
+        random.seed(42)
+        random.shuffle(raw_data)
         raw_data = raw_data[:max_samples]
 
     dpo_data = []

@@ -34,6 +34,7 @@ def main(args):
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"  # Causal LM: pad from left so eos isn't mid-sequence
 
     # Setup model loading — 4-bit QLoRA on CUDA, fp16 on MPS, fp32 on CPU
     if has_cuda:
@@ -98,6 +99,7 @@ def main(args):
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
         logging_steps=10,
+        warmup_steps=100,
         max_steps=args.max_steps if args.max_steps else -1,
         num_train_epochs=args.epochs if not args.max_steps else 1,
         eval_strategy="epoch",  # Evaluates once exactly at the end
@@ -108,7 +110,7 @@ def main(args):
         dataloader_num_workers=2 if has_cuda else 0,
         # pin_memory is not supported on MPS and triggers a warning.
         dataloader_pin_memory=has_cuda,
-        fp16=False, # <-- MUST BE FALSE. Disable GradScaler to bypass TinyLlama config.json bfloat16 poisoning
+        fp16=has_cuda,  # Safe with QLoRA; bf16 is the problematic one (TinyLlama config.json)
         bf16=False,
         use_cpu=device == "cpu",
         report_to="none", # Turn off wandb for local debug
