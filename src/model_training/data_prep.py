@@ -36,23 +36,82 @@ def build_user_prompt(claim: str, evidence_passages: List[Dict]) -> str:
             prompt += f"[{evidence_id}]: {text}\n"
     return prompt
 
+_SUPPORTED_TEMPLATES = [
+    "The claim is supported by the provided evidence {citations}.",
+    "Based on the evidence {citations}, this claim is verified as accurate.",
+    "The evidence {citations} confirms the claim.",
+    "According to {citations}, the claim is substantiated.",
+    "Review of {citations} indicates the claim is true.",
+]
+
+_REFUTED_TEMPLATES = [
+    "The claim is refuted by the provided evidence {citations}.",
+    "Based on the evidence {citations}, this claim is contradicted.",
+    "The evidence {citations} disproves the claim.",
+    "According to {citations}, the claim is inaccurate.",
+    "Review of {citations} indicates the claim is false.",
+]
+
+_NEI_TEMPLATES = [
+    "The provided evidence does not contain sufficient information to verify or refute this claim.",
+    "There is not enough evidence available to determine whether this claim is true or false.",
+    "The available evidence is insufficient to reach a confident verdict on this claim.",
+    "No conclusive evidence was found to either support or refute this claim.",
+    "The evidence does not clearly address the claim, so a verdict cannot be determined.",
+]
+
+# Module-level counters for round-robin template selection across calls.
+_template_counters: Dict[str, int] = {"SUPPORTED": 0, "REFUTED": 0, "NOT_ENOUGH_INFO": 0}
+
 def build_assistant_response(verdict: str, evidence_passages: List[Dict]) -> str:
-    """Builds the gold assistant response for SFT."""
+    """Builds the gold assistant response for SFT with varied phrasing."""
     response = f"Verdict: {verdict}\nExplanation: "
     if verdict == "NOT_ENOUGH_INFO":
-        response += "The provided evidence does not contain sufficient information to verify or refute this claim."
+        idx = _template_counters["NOT_ENOUGH_INFO"] % len(_NEI_TEMPLATES)
+        _template_counters["NOT_ENOUGH_INFO"] += 1
+        response += _NEI_TEMPLATES[idx]
     else:
-        # Just cite everything for the baseline
-        # A more advanced version would use Person B's stance classifier to only cite SUPPORTING/REFUTING
         ids = [f"[{ev['id']}]" for ev in evidence_passages if 'id' in ev]
         citation_str = " ".join(ids) if ids else "[No Citation]"
-        explanation = "The claim is " + ("supported" if verdict == "SUPPORTED" else "refuted") + f" by the provided evidence {citation_str}."
-        response += explanation
+        templates = _SUPPORTED_TEMPLATES if verdict == "SUPPORTED" else _REFUTED_TEMPLATES
+        idx = _template_counters[verdict] % len(templates)
+        _template_counters[verdict] += 1
+        response += templates[idx].format(citations=citation_str)
     return response
 
 def _has_evidence(item: Dict) -> bool:
     """Returns True if the sample has at least one evidence passage."""
     return len(item.get("evidence_passages", [])) > 0
+
+
+def _balance_nei(data: List[Dict]) -> List[Dict]:
+    """Cap NOT_ENOUGH_INFO samples to match the smallest non-NEI class count.
+
+    All NEI samples have empty evidence, so the model learns a shallow
+    "no evidence → NEI" shortcut.  Reducing their count limits this while
+    keeping a healthy proportion of abstention examples.
+    """
+    from collections import Counter
+    verdict_counts = Counter(item.get("verdict") for item in data)
+    non_nei = {v: c for v, c in verdict_counts.items() if v != "NOT_ENOUGH_INFO"}
+    if not non_nei:
+        return data
+    nei_cap = min(non_nei.values())
+    nei_count = verdict_counts.get("NOT_ENOUGH_INFO", 0)
+    if nei_count <= nei_cap:
+        return data
+
+    logger.info(f"Capping NEI samples from {nei_count} to {nei_cap} (matches smallest class).")
+    result = []
+    nei_kept = 0
+    for item in data:
+        if item.get("verdict") == "NOT_ENOUGH_INFO":
+            if nei_kept < nei_cap:
+                result.append(item)
+                nei_kept += 1
+        else:
+            result.append(item)
+    return result
 
 
 def prepare_sft_dataset(input_filepath: str | Path, tokenizer=None, max_samples: int = None) -> Dataset:
@@ -73,6 +132,11 @@ def prepare_sft_dataset(input_filepath: str | Path, tokenizer=None, max_samples:
         if item.get("verdict") == "NOT_ENOUGH_INFO" or _has_evidence(item)
     ]
     logger.info(f"After evidence filter: {len(raw_data)} samples retained.")
+
+    # Cap NEI samples: all NEI have empty evidence ("Evidence: None"), so the
+    # model learns a shortcut rather than reasoning.  Limit NEI to match the
+    # count of the smallest verdict class to reduce imbalance.
+    raw_data = _balance_nei(raw_data)
 
     if max_samples:
         random.seed(42)
@@ -140,6 +204,8 @@ def prepare_dpo_dataset(input_filepath: str | Path, max_samples: int = None) -> 
         if item.get("verdict") == "NOT_ENOUGH_INFO" or _has_evidence(item)
     ]
     logger.info(f"DPO — after evidence filter: {len(raw_data)} samples retained.")
+
+    raw_data = _balance_nei(raw_data)
 
     if max_samples:
         random.seed(42)
