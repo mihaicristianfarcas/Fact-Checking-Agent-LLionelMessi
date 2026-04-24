@@ -102,15 +102,18 @@ def main(args):
         num_train_epochs=args.epochs if not args.max_steps else 1,
         eval_strategy="epoch",  # Evaluates once exactly at the end
         save_strategy="epoch",  # Saves backup once exactly at the end
-        optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
+        # paged_adamw_8bit is CUDA-only; fall back to standard AdamW on MPS/CPU.
+        optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
         # dataloader workers: GPU pipelining only helps when CUDA is available.
         dataloader_num_workers=2 if has_cuda else 0,
+        # pin_memory is not supported on MPS and triggers a warning.
+        dataloader_pin_memory=has_cuda,
         fp16=False, # <-- MUST BE FALSE. Disable GradScaler to bypass TinyLlama config.json bfloat16 poisoning
         bf16=False,
         use_cpu=device == "cpu",
         report_to="none", # Turn off wandb for local debug
         # Explicit context length — TinyLlama supports 2048; evidence prompts can be long.
-        max_seq_length=2048,
+        max_length=2048,
     )
 
     # SFT Trainer
