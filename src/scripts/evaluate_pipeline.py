@@ -1,75 +1,60 @@
 #!/usr/bin/env python3
 """Full-pipeline FEVER evaluation harness.
 
-Unlike evaluate_baseline.py (retrieval-only heuristic), this script runs
-every claim through the complete agent pipeline:
+Runs:
+    decompose -> retrieve -> stance classify -> credibility score -> synthesize
 
-    decompose → retrieve → stance classify → credibility score → synthesize
-
-and reports end-to-end metrics:
-
-    1. Verdict accuracy and macro F1 (three-class).
-    2. Per-class precision / recall / F1.
-    3. Calibration (ECE) on the synthesizer's final confidence.
-    4. Citation faithfulness — % of cited passage IDs that exist in retrieval.
-    5. Hallucination rate — % of outputs that cite non-retrieved passages or
-       make a verdict claim with zero citations.
-    6. Confusion matrix.
-
-Usage:
-    python -m src.scripts.evaluate_pipeline
-    python -m src.scripts.evaluate_pipeline --max-claims 500 --top-k 5
-    python -m src.scripts.evaluate_pipeline --max-claims 0   # full dev set
+and reports verdict quality, calibration, citation faithfulness, and optional
+wrong-prediction traces for retrieval/stance/synthesis diagnosis.
 """
 
 import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-from datasets import load_dataset
 from loguru import logger
 from sklearn.metrics import classification_report, confusion_matrix
+from tqdm import tqdm
 
-from src.agent.orchestrator import FactCheckAgent
+from src.agent.orchestrator import FactCheckAgent, PipelineTrace
+from src.claim_processing.decomposer import AtomicClaim, DecompositionResult
+from src.claim_processing.stance_classifier import StanceClassifier
+from src.config import settings
+from src.data_ingestion.retriever.fever_title_retriever import default_title_index_path
+from src.data_ingestion.retriever.hybrid_retriever import HybridEvidenceRetriever
+from src.evaluation.fever_utils import (
+    LABELS,
+    ChromaPagePresence,
+    gold_page_presence_stats,
+    load_fever_dev_claims,
+    load_train_claim_texts,
+    serialize_gold_pages,
+)
+from src.scoring.credibility_scorer import CredibilityScorer
+from src.synthesis.verdict_synthesizer import VerdictSynthesizer
 
 
-LABEL_MAP = {
-    "SUPPORTS": "SUPPORTED",
-    "REFUTES": "REFUTED",
-    "NOT ENOUGH INFO": "NOT_ENOUGH_INFO",
-}
-LABELS = ["SUPPORTED", "REFUTED", "NOT_ENOUGH_INFO"]
+class PassthroughDecomposer:
+    """Eval helper that treats each FEVER claim as one atomic claim."""
 
-
-def load_dev_claims(max_claims: int | None) -> list[dict]:
-    """Load and deduplicate FEVER labelled_dev claims."""
-    logger.info("Loading FEVER labelled_dev...")
-    ds = load_dataset(
-        "fever/fever",
-        "v1.0",
-        split="labelled_dev",
-        trust_remote_code=True,
-        verification_mode="no_checks",
-    )
-
-    grouped: dict[int, dict] = {}
-    for row in ds:
-        cid = row["id"]
-        if cid not in grouped:
-            grouped[cid] = {
-                "id": cid,
-                "claim": row["claim"],
-                "label": LABEL_MAP[row["label"]],
-            }
-
-    claims = list(grouped.values())
-    if max_claims and max_claims > 0:
-        claims = claims[:max_claims]
-
-    logger.info(f"Evaluating on {len(claims)} claims")
-    return claims
+    def decompose(self, claim: str) -> DecompositionResult:
+        return DecompositionResult(
+            original_claim=claim,
+            atomic_claims=[
+                AtomicClaim(
+                    text=claim,
+                    source_claim=claim,
+                    claim_index=0,
+                    extraction_method="passthrough",
+                )
+            ],
+            was_compound=False,
+            model_used="passthrough",
+            latency_ms=0.0,
+        )
 
 
 def expected_calibration_error(
@@ -95,10 +80,233 @@ def expected_calibration_error(
     return float(ece)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Full-pipeline FEVER evaluation"
+def build_agent(args) -> FactCheckAgent:
+    """Construct the pipeline with optional retrieval and threshold overrides."""
+    decomposer = PassthroughDecomposer() if args.skip_decomposition else None
+
+    retriever = None
+    if args.enable_title_retrieval or args.enable_reranker:
+        retriever = HybridEvidenceRetriever(
+            enable_dense_retrieval=True,
+            enable_title_retrieval=args.enable_title_retrieval,
+            enable_reranker=args.enable_reranker,
+            candidate_k=max(args.candidate_k, args.top_k),
+            title_candidate_k=args.title_candidate_k,
+            title_candidate_pages=args.title_candidate_pages,
+            title_index_path=args.title_index_path,
+            reranker_model=args.reranker_model,
+        )
+
+    stance_classifier = None
+    if (
+        args.stance_confidence_threshold is not None
+        or args.include_source_title_in_stance
+    ):
+        stance_classifier = StanceClassifier(
+            confidence_threshold=args.stance_confidence_threshold
+            if args.stance_confidence_threshold is not None
+            else settings.stance_confidence_threshold,
+            include_source_title_in_premise=args.include_source_title_in_stance,
+        )
+
+    credibility_scorer = CredibilityScorer(
+        use_source_relevance=not args.disable_source_relevance
     )
+
+    synthesizer = None
+    if (
+        args.nei_confidence_floor is not None
+        or args.decisive_dominance_floor is not None
+        or args.disable_refute_overrides
+        or args.min_refuting_passages != 1
+        or args.single_refute_confidence_floor > 0
+        or args.refute_source_relevance_floor is not None
+        or args.refute_conflict_margin is not None
+    ):
+        synthesizer = VerdictSynthesizer(
+            credibility_scorer=credibility_scorer,
+            nei_confidence_floor=args.nei_confidence_floor
+            if args.nei_confidence_floor is not None
+            else 0.45,
+            refute_overrides=not args.disable_refute_overrides,
+            decisive_dominance_floor=args.decisive_dominance_floor
+            if args.decisive_dominance_floor is not None
+            else 0.60,
+            min_refuting_passages=args.min_refuting_passages,
+            single_refute_confidence_floor=args.single_refute_confidence_floor,
+            refute_source_relevance_floor=args.refute_source_relevance_floor
+            if args.refute_source_relevance_floor is not None
+            else 0.55,
+            refute_conflict_margin=args.refute_conflict_margin
+            if args.refute_conflict_margin is not None
+            else 0.15,
+        )
+
+    return FactCheckAgent(
+        decomposer=decomposer,
+        retriever=retriever,
+        stance_classifier=stance_classifier,
+        credibility_scorer=credibility_scorer,
+        synthesizer=synthesizer,
+        top_k=args.top_k,
+        adaptive=args.adaptive,
+        combine_same_source_evidence=args.combine_same_source_evidence,
+        same_source_max_passages=args.same_source_max_passages,
+    )
+
+
+def summarize_retrievals(trace: PipelineTrace) -> list[dict[str, Any]]:
+    """Flatten trace retrievals into JSON-friendly rows."""
+    rows: list[dict[str, Any]] = []
+    for atomic_claim, results in trace.retrievals.items():
+        for r in results:
+            metadata = r.passage.metadata
+            rows.append(
+                {
+                    "atomic_claim": atomic_claim,
+                    "rank": r.rank,
+                    "passage_id": r.passage.id,
+                    "source": r.passage.source,
+                    "dataset": r.passage.dataset,
+                    "score": r.score,
+                    "retrieval_methods": metadata.get("retrieval_methods")
+                    or metadata.get("retrieval_method"),
+                    "dense_score": metadata.get("dense_score"),
+                    "title_score": metadata.get("title_score"),
+                    "title_match_type": metadata.get("title_match_type"),
+                    "rerank_score": metadata.get("rerank_score"),
+                    "source_relevance": metadata.get("source_relevance"),
+                    "source_relevance_reason": metadata.get(
+                        "source_relevance_reason"
+                    ),
+                    "text_preview": r.passage.text[:240],
+                }
+            )
+    return rows
+
+
+def summarize_candidates(trace: PipelineTrace, retriever) -> list[dict[str, Any]]:
+    """Collect hybrid pre-rerank candidates when the retriever exposes them."""
+    if retriever is None or not hasattr(retriever, "get_last_debug"):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for atomic_claim in trace.retrievals:
+        debug = retriever.get_last_debug(atomic_claim)
+        if not debug:
+            continue
+        for candidate in debug.candidates:
+            row = dict(candidate)
+            row["atomic_claim"] = atomic_claim
+            rows.append(row)
+    return rows
+
+
+def summarize_stances(trace: PipelineTrace) -> list[dict[str, Any]]:
+    """Flatten stance classifier outputs into JSON-friendly rows."""
+    rows: list[dict[str, Any]] = []
+    for atomic_claim, stance_result in trace.stance_results.items():
+        for ps in stance_result.passage_stances:
+            rows.append(
+                {
+                    "atomic_claim": atomic_claim,
+                    "passage_id": ps.passage_id,
+                    "source": ps.passage_source,
+                    "rank": ps.retrieval_rank,
+                    "retrieval_score": ps.retrieval_score,
+                    "stance": ps.stance.value,
+                    "confidence": ps.confidence,
+                    "raw_scores": ps.raw_scores,
+                    "source_relevance": ps.passage_metadata.get("source_relevance"),
+                    "source_relevance_reason": ps.passage_metadata.get(
+                        "source_relevance_reason"
+                    ),
+                }
+            )
+    return rows
+
+
+def classify_failure_category(
+    *,
+    gold_label: str,
+    predicted_label: str,
+    gold_pages: set[str],
+    gold_page_present_in_chroma: bool,
+    retrieval_rows: list[dict[str, Any]],
+    candidate_rows: list[dict[str, Any]],
+    stance_rows: list[dict[str, Any]],
+) -> str:
+    """Classify a wrong prediction into a high-level failure mode."""
+    if predicted_label == gold_label:
+        return "correct"
+
+    final_has_gold = any(row["source"] in gold_pages for row in retrieval_rows)
+    candidate_has_gold = any(row["source"] in gold_pages for row in candidate_rows)
+
+    if gold_pages and not final_has_gold:
+        if candidate_has_gold:
+            return "rerank_dropped_gold_page"
+        if not gold_page_present_in_chroma:
+            return "gold_page_absent_from_current_index"
+        return "candidate_missing"
+
+    expected_stance = {
+        "SUPPORTED": "SUPPORTING",
+        "REFUTED": "REFUTING",
+    }.get(gold_label)
+    if expected_stance:
+        has_expected_stance = any(
+            row["source"] in gold_pages and row["stance"] == expected_stance
+            for row in stance_rows
+        )
+        return "synthesis_wrong" if has_expected_stance else "stance_wrong"
+
+    return "stance_wrong"
+
+
+def make_error_trace(
+    claim_data: dict,
+    trace: PipelineTrace,
+    retriever,
+    page_presence: ChromaPagePresence,
+) -> dict[str, Any]:
+    """Build one wrong-prediction trace row."""
+    result = trace.synthesis
+    gold_pages = claim_data["gold_pages"]
+    retrieval_rows = summarize_retrievals(trace)
+    candidate_rows = summarize_candidates(trace, retriever)
+    stance_rows = summarize_stances(trace)
+    gold_present = page_presence.any_present(gold_pages)
+    category = classify_failure_category(
+        gold_label=claim_data["label"],
+        predicted_label=result.verdict,
+        gold_pages=gold_pages,
+        gold_page_present_in_chroma=gold_present,
+        retrieval_rows=retrieval_rows,
+        candidate_rows=candidate_rows,
+        stance_rows=stance_rows,
+    )
+
+    return {
+        "claim_id": claim_data["id"],
+        "claim": claim_data["claim"],
+        "gold_label": claim_data["label"],
+        "predicted_label": result.verdict,
+        "confidence": result.confidence,
+        "failure_category": category,
+        "gold_pages": serialize_gold_pages(gold_pages),
+        "gold_page_present_in_current_chroma": gold_present,
+        "cited_passage_ids": result.cited_passage_ids,
+        "hallucinated_citations": result.hallucinated_citations,
+        "atomic_verdicts": [av.to_dict() for av in result.atomic_verdicts],
+        "retrieved": retrieval_rows,
+        "candidates_before_rerank": candidate_rows,
+        "stances": stance_rows,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Full-pipeline FEVER evaluation")
     parser.add_argument(
         "--max-claims",
         type=int,
@@ -109,7 +317,7 @@ def main():
         "--top-k",
         type=int,
         default=5,
-        help="Passages to retrieve per atomic claim.",
+        help="Final passages to pass to the stance classifier per atomic claim.",
     )
     parser.add_argument(
         "--output",
@@ -122,12 +330,158 @@ def main():
         action="store_true",
         help="Enable adaptive retrieval in the agent.",
     )
+    parser.add_argument(
+        "--exclude-train-overlap",
+        action="store_true",
+        help="Exclude FEVER dev claims whose normalized text appears in train triples.",
+    )
+    parser.add_argument(
+        "--train-triples",
+        type=str,
+        default="data/processed/train.jsonl",
+        help="JSONL training triples used for exact-overlap exclusion.",
+    )
+    parser.add_argument(
+        "--trace-errors-output",
+        type=str,
+        default=None,
+        help="Optional path to write wrong-prediction traces.",
+    )
+    parser.add_argument(
+        "--trace-error-limit",
+        type=int,
+        default=100,
+        help="Maximum wrong-prediction traces to save (0 = all).",
+    )
+    parser.add_argument(
+        "--skip-decomposition",
+        action="store_true",
+        help="Treat each FEVER claim as one atomic claim for faster eval.",
+    )
+    parser.add_argument(
+        "--enable-title-retrieval",
+        action="store_true",
+        help="Add full-FEVER title/page candidates before stance classification.",
+    )
+    parser.add_argument(
+        "--enable-reranker",
+        action="store_true",
+        help="Retrieve candidate_k dense/title candidates and cross-encoder rerank.",
+    )
+    parser.add_argument(
+        "--candidate-k",
+        type=int,
+        default=50,
+        help="Dense candidate depth before reranking when reranker/title retrieval is enabled.",
+    )
+    parser.add_argument(
+        "--reranker-model",
+        type=str,
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        help="SentenceTransformers CrossEncoder model for reranking.",
+    )
+    parser.add_argument(
+        "--title-index-path",
+        type=str,
+        default=str(default_title_index_path()),
+        help="Path to data/index/fever_titles.sqlite.",
+    )
+    parser.add_argument(
+        "--title-candidate-pages",
+        type=int,
+        default=20,
+        help="Number of FEVER title-matched pages to inspect.",
+    )
+    parser.add_argument(
+        "--title-candidate-k",
+        type=int,
+        default=50,
+        help="Number of title/page passages to add before reranking.",
+    )
+    parser.add_argument(
+        "--stance-confidence-threshold",
+        type=float,
+        default=None,
+        help="Eval-only stance confidence threshold override.",
+    )
+    parser.add_argument(
+        "--include-source-title-in-stance",
+        action="store_true",
+        help="Prepend page/source title to each NLI premise.",
+    )
+    parser.add_argument(
+        "--combine-same-source-evidence",
+        action="store_true",
+        help="Classify compact same-source evidence windows instead of isolated passages.",
+    )
+    parser.add_argument(
+        "--same-source-max-passages",
+        type=int,
+        default=3,
+        help="Max same-source passages to concatenate for stance classification.",
+    )
+    parser.add_argument(
+        "--nei-confidence-floor",
+        type=float,
+        default=None,
+        help="Eval-only synthesizer NEI floor override.",
+    )
+    parser.add_argument(
+        "--decisive-dominance-floor",
+        type=float,
+        default=None,
+        help="Eval-only synthesizer decisive dominance override.",
+    )
+    parser.add_argument(
+        "--disable-refute-overrides",
+        action="store_true",
+        help="Disable claim-level single-refutation override.",
+    )
+    parser.add_argument(
+        "--min-refuting-passages",
+        type=int,
+        default=1,
+        help="Require this many refuting passages unless the single-refute floor is met.",
+    )
+    parser.add_argument(
+        "--single-refute-confidence-floor",
+        type=float,
+        default=0.0,
+        help="Allow one refuting passage only when its stance confidence reaches this floor.",
+    )
+    parser.add_argument(
+        "--disable-source-relevance",
+        action="store_true",
+        help="Disable source-title relevance weighting in credibility scoring.",
+    )
+    parser.add_argument(
+        "--refute-source-relevance-floor",
+        type=float,
+        default=None,
+        help="Require refutations to come from sources at least this relevant.",
+    )
+    parser.add_argument(
+        "--refute-conflict-margin",
+        type=float,
+        default=None,
+        help="Source relevance margin where stronger support can block weak refutes.",
+    )
     args = parser.parse_args()
 
-    claims = load_dev_claims(args.max_claims)
+    exclude_claim_texts = None
+    if args.exclude_train_overlap:
+        exclude_claim_texts = load_train_claim_texts(args.train_triples)
+        logger.info(
+            f"Loaded {len(exclude_claim_texts)} training claims for decontamination"
+        )
 
-    logger.info("Initializing FactCheckAgent (this loads models)...")
-    agent = FactCheckAgent(top_k=args.top_k, adaptive=args.adaptive)
+    claims, excluded_count = load_fever_dev_claims(
+        args.max_claims,
+        exclude_claim_texts=exclude_claim_texts,
+    )
+
+    logger.info("Initializing FactCheckAgent (this loads models lazily)...")
+    agent = build_agent(args)
 
     y_true: list[str] = []
     y_pred: list[str] = []
@@ -135,41 +489,62 @@ def main():
     correct_flags: list[bool] = []
     hallucination_flags: list[bool] = []
     citation_missing_flags: list[bool] = []
+    error_traces: list[dict] = []
+
+    chroma_index_dir = settings.get_absolute_path(settings.chroma_persist_dir)
 
     logger.info(f"Running pipeline on {len(claims)} claims...")
-    for i, claim_data in enumerate(claims):
-        if (i + 1) % 50 == 0 or i == 0:
-            logger.info(f"  Progress: {i + 1}/{len(claims)}")
+    with ChromaPagePresence.from_index_dir(chroma_index_dir) as page_presence:
+        page_presence_stats = gold_page_presence_stats(claims, page_presence)
 
-        try:
-            result = agent.check(claim_data["claim"])
-        except Exception as exc:
-            logger.warning(
-                f"Claim {claim_data['id']} failed: {exc}. Defaulting to NEI."
+        for i, claim_data in enumerate(tqdm(claims, desc="Pipeline eval")):
+            try:
+                trace = agent.check_with_trace(claim_data["claim"])
+                result = trace.synthesis
+            except Exception as exc:
+                logger.warning(
+                    f"Claim {claim_data['id']} failed: {exc}. Defaulting to NEI."
+                )
+                y_true.append(claim_data["label"])
+                y_pred.append("NOT_ENOUGH_INFO")
+                confidences.append(0.0)
+                correct_flags.append(claim_data["label"] == "NOT_ENOUGH_INFO")
+                hallucination_flags.append(False)
+                citation_missing_flags.append(False)
+                continue
+
+            gold = claim_data["label"]
+            pred = result.verdict
+
+            y_true.append(gold)
+            y_pred.append(pred)
+            confidences.append(result.confidence)
+            correct_flags.append(pred == gold)
+
+            has_hallucinated_cite = len(result.hallucinated_citations) > 0
+            hallucination_flags.append(has_hallucinated_cite)
+
+            missing_cite = not result.citation_present
+            citation_missing_flags.append(missing_cite)
+
+            should_trace = (
+                args.trace_errors_output
+                and pred != gold
+                and (
+                    args.trace_error_limit <= 0
+                    or len(error_traces) < args.trace_error_limit
+                )
             )
-            y_true.append(claim_data["label"])
-            y_pred.append("NOT_ENOUGH_INFO")
-            confidences.append(0.0)
-            correct_flags.append(claim_data["label"] == "NOT_ENOUGH_INFO")
-            hallucination_flags.append(False)
-            citation_missing_flags.append(False)
-            continue
+            if should_trace:
+                error_traces.append(
+                    make_error_trace(
+                        claim_data,
+                        trace,
+                        agent.retriever,
+                        page_presence,
+                    )
+                )
 
-        gold = claim_data["label"]
-        pred = result.verdict
-
-        y_true.append(gold)
-        y_pred.append(pred)
-        confidences.append(result.confidence)
-        correct_flags.append(pred == gold)
-
-        has_hallucinated_cite = len(result.hallucinated_citations) > 0
-        hallucination_flags.append(has_hallucinated_cite)
-
-        missing_cite = not result.citation_present
-        citation_missing_flags.append(missing_cite)
-
-    # ── Compute metrics ───────────────────────────────────────────────────
     n = len(y_true)
     accuracy = sum(p == t for p, t in zip(y_pred, y_true)) / n if n else 0
     ece = expected_calibration_error(confidences, correct_flags)
@@ -193,14 +568,18 @@ def main():
     cite_missing = sum(citation_missing_flags)
     cite_missing_rate = cite_missing / n if n else 0
 
-    # ── Print results ─────────────────────────────────────────────────────
     sep = "=" * 64
     print(f"\n{sep}")
     print("  Full Pipeline Evaluation - Results")
     print(sep)
     print(f"\n  Claims evaluated : {n:,}")
     print(f"  Top-k per atomic : {args.top_k}")
+    print(f"  Candidate-k      : {args.candidate_k}")
     print(f"  Adaptive mode    : {args.adaptive}")
+    print(f"  Title retrieval  : {args.enable_title_retrieval}")
+    print(f"  Reranker         : {args.enable_reranker}")
+    if args.exclude_train_overlap:
+        print(f"  Train overlaps excluded : {excluded_count:,}")
 
     print(f"\n  Ground-truth distribution:")
     for lbl in LABELS:
@@ -229,6 +608,15 @@ def main():
     for lbl, row in zip(LABELS, cm):
         print(f"  {lbl[:9]:<12}" + "".join(f"{v:>12,}" for v in row))
 
+    print(f"\n-- Retrieval Diagnostics --------------------------------------")
+    if page_presence_stats["claims_with_gold_pages"]:
+        print(
+            "  Gold page present in current Chroma index: "
+            f"{page_presence_stats['claims_with_gold_page_present']:,}/"
+            f"{page_presence_stats['claims_with_gold_pages']:,} "
+            f"({page_presence_stats['gold_page_present_rate']:.3f})"
+        )
+
     print(f"\n-- Citation & Hallucination -----------------------------------")
     print(f"  Hallucinated citations : {halluc_count:,}/{n:,}  ({halluc_rate:.1%})")
     print(f"  Missing citations      : {cite_missing:,}/{n:,}  ({cite_missing_rate:.1%})")
@@ -237,16 +625,49 @@ def main():
 
     print(f"\n{sep}\n")
 
-    # ── Save results ──────────────────────────────────────────────────────
     results_dict = {
         "n_claims": n,
         "top_k": args.top_k,
+        "candidate_k": args.candidate_k,
+        "index_type": "current_chroma_plus_fever_title"
+        if args.enable_title_retrieval
+        else "current_chroma",
+        "embedding_model": settings.embedding_model,
         "adaptive": args.adaptive,
+        "exclude_train_overlap": args.exclude_train_overlap,
+        "excluded_train_overlap_count": excluded_count,
+        "train_triples": args.train_triples if args.exclude_train_overlap else None,
+        "skip_decomposition": args.skip_decomposition,
+        "enable_title_retrieval": args.enable_title_retrieval,
+        "enable_reranker": args.enable_reranker,
+        "reranker_model": args.reranker_model if args.enable_reranker else None,
+        "title_index_path": args.title_index_path
+        if args.enable_title_retrieval
+        else None,
+        "title_candidate_pages": args.title_candidate_pages,
+        "title_candidate_k": args.title_candidate_k,
+        "stance_confidence_threshold": args.stance_confidence_threshold,
+        "include_source_title_in_stance": args.include_source_title_in_stance,
+        "combine_same_source_evidence": args.combine_same_source_evidence,
+        "same_source_max_passages": args.same_source_max_passages,
+        "nei_confidence_floor": args.nei_confidence_floor,
+        "decisive_dominance_floor": args.decisive_dominance_floor,
+        "refute_overrides": not args.disable_refute_overrides,
+        "min_refuting_passages": args.min_refuting_passages,
+        "single_refute_confidence_floor": args.single_refute_confidence_floor,
+        "source_relevance_enabled": not args.disable_source_relevance,
+        "refute_source_relevance_floor": args.refute_source_relevance_floor
+        if args.refute_source_relevance_floor is not None
+        else 0.55,
+        "refute_conflict_margin": args.refute_conflict_margin
+        if args.refute_conflict_margin is not None
+        else 0.15,
         "accuracy": accuracy,
         "macro_f1": macro_f1,
         "ece": ece,
         "hallucination_rate": halluc_rate,
         "citation_missing_rate": cite_missing_rate,
+        **page_presence_stats,
         "per_class": {
             lbl: {
                 "precision": report[lbl]["precision"],
@@ -259,12 +680,16 @@ def main():
         "label_distribution": dict(label_dist),
     }
 
-    out_path = Path(
-        args.output or "data/processed/pipeline_eval_results.json"
-    )
+    out_path = Path(args.output or "data/processed/pipeline_eval_results.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(results_dict, indent=2))
+    out_path.write_text(json.dumps(results_dict, indent=2), encoding="utf-8")
     logger.info(f"Results saved to {out_path}")
+
+    if args.trace_errors_output:
+        trace_path = Path(args.trace_errors_output)
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text(json.dumps(error_traces, indent=2), encoding="utf-8")
+        logger.info(f"Wrong-prediction traces saved to {trace_path}")
 
 
 if __name__ == "__main__":
