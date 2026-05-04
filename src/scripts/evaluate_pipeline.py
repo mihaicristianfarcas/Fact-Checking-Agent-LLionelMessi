@@ -21,7 +21,12 @@ from tqdm import tqdm
 
 from src.agent.orchestrator import FactCheckAgent, PipelineTrace
 from src.claim_processing.decomposer import AtomicClaim, DecompositionResult
-from src.claim_processing.stance_classifier import StanceClassifier
+from src.claim_processing.stance_classifier import (
+    PassageStance,
+    StanceClassifier,
+    StanceLabel,
+    StanceResult,
+)
 from src.config import settings
 from src.data_ingestion.retriever.fever_title_retriever import default_title_index_path
 from src.data_ingestion.retriever.hybrid_retriever import HybridEvidenceRetriever
@@ -54,6 +59,44 @@ class PassthroughDecomposer:
             was_compound=False,
             model_used="passthrough",
             latency_ms=0.0,
+        )
+
+
+class NeutralVerifierStanceClassifier:
+    """Cheap stance stub used when a trained claim-level verifier is enabled."""
+
+    model_name = "trained-verifier-neutral-stub"
+
+    def classify(self, claim: str, retrievals: list) -> StanceResult:
+        passage_stances = [
+            PassageStance(
+                passage_id=r.passage.id,
+                passage_text=r.passage.text,
+                passage_source=r.passage.source,
+                passage_dataset=r.passage.dataset,
+                retrieval_score=r.score,
+                retrieval_rank=r.rank,
+                stance=StanceLabel.NEUTRAL,
+                confidence=1.0,
+                raw_scores={
+                    StanceLabel.SUPPORTING.value: 0.0,
+                    StanceLabel.REFUTING.value: 0.0,
+                    StanceLabel.NEUTRAL.value: 1.0,
+                },
+                passage_metadata=dict(getattr(r.passage, "metadata", {}) or {}),
+            )
+            for r in retrievals
+        ]
+        return StanceResult(
+            claim_text=claim,
+            passage_stances=passage_stances,
+            aggregate_label=StanceLabel.NEUTRAL,
+            aggregate_score=0.0,
+            supporting_count=0,
+            refuting_count=0,
+            neutral_count=len(passage_stances),
+            latency_ms=0.0,
+            model_name=self.model_name,
         )
 
 
@@ -98,7 +141,9 @@ def build_agent(args) -> FactCheckAgent:
         )
 
     stance_classifier = None
-    if (
+    if args.use_trained_verifier:
+        stance_classifier = NeutralVerifierStanceClassifier()
+    elif (
         args.stance_confidence_threshold is not None
         or args.include_source_title_in_stance
     ):
@@ -466,6 +511,82 @@ def main():
         default=None,
         help="Source relevance margin where stronger support can block weak refutes.",
     )
+    parser.add_argument(
+        "--use-trained-verifier",
+        action="store_true",
+        help="Override the final verdict with a trained claim-level verifier.",
+    )
+    parser.add_argument(
+        "--verifier-model-path",
+        type=str,
+        default="models/fever_verifier_deberta_base",
+        help="Local path to the trained FEVER verifier model.",
+    )
+    parser.add_argument(
+        "--verifier-max-length",
+        type=int,
+        default=384,
+        help="Tokenizer max length for trained verifier inference.",
+    )
+    parser.add_argument(
+        "--verifier-max-passages",
+        type=int,
+        default=None,
+        help="Max retrieved passages included in trained verifier input.",
+    )
+    parser.add_argument(
+        "--verifier-device",
+        type=str,
+        default=None,
+        help="Optional verifier device override: cuda, cpu, or mps.",
+    )
+    parser.add_argument(
+        "--verifier-min-confidence",
+        type=float,
+        default=None,
+        help="Downgrade trained-verifier predictions below this confidence to NEI.",
+    )
+    parser.add_argument(
+        "--verifier-min-margin",
+        type=float,
+        default=None,
+        help="Downgrade trained-verifier predictions below this top-2 probability margin to NEI.",
+    )
+    parser.add_argument(
+        "--verifier-supported-threshold",
+        type=float,
+        default=None,
+        help="Minimum confidence required to keep a trained-verifier SUPPORTED prediction.",
+    )
+    parser.add_argument(
+        "--verifier-refuted-threshold",
+        type=float,
+        default=None,
+        help="Minimum confidence required to keep a trained-verifier REFUTED prediction.",
+    )
+    parser.add_argument(
+        "--verifier-nei-threshold",
+        type=float,
+        default=None,
+        help="Minimum confidence required to keep a trained-verifier NEI prediction.",
+    )
+    parser.add_argument(
+        "--ensemble-baseline-refute-fallback",
+        action="store_true",
+        help="Recover strong baseline REFUTED predictions when the verifier abstains.",
+    )
+    parser.add_argument(
+        "--ensemble-baseline-refute-threshold",
+        type=float,
+        default=0.75,
+        help="Min baseline confidence for --ensemble-baseline-refute-fallback.",
+    )
+    parser.add_argument(
+        "--ensemble-verifier-refute-prob-threshold",
+        type=float,
+        default=0.25,
+        help="Min verifier REFUTED probability for baseline refute fallback.",
+    )
     args = parser.parse_args()
 
     exclude_claim_texts = None
@@ -482,6 +603,23 @@ def main():
 
     logger.info("Initializing FactCheckAgent (this loads models lazily)...")
     agent = build_agent(args)
+
+    verifier = None
+    if args.use_trained_verifier:
+        from src.claim_processing.verdict_verifier import (
+            FeverVerdictVerifier,
+            apply_baseline_refute_fallback,
+            calibrate_verifier_prediction,
+            flatten_trace_retrievals,
+            override_synthesis_with_prediction,
+        )
+
+        logger.info(f"Loading trained verifier from {args.verifier_model_path}")
+        verifier = FeverVerdictVerifier(
+            args.verifier_model_path,
+            device=args.verifier_device,
+            max_length=args.verifier_max_length,
+        )
 
     y_true: list[str] = []
     y_pred: list[str] = []
@@ -501,6 +639,39 @@ def main():
             try:
                 trace = agent.check_with_trace(claim_data["claim"])
                 result = trace.synthesis
+                if verifier is not None:
+                    baseline_result = result
+                    retrievals = flatten_trace_retrievals(trace)
+                    prediction = verifier.predict(
+                        claim_data["claim"],
+                        retrievals,
+                        max_passages=args.verifier_max_passages,
+                    )
+                    prediction = calibrate_verifier_prediction(
+                        prediction,
+                        min_confidence=args.verifier_min_confidence,
+                        min_margin=args.verifier_min_margin,
+                        supported_threshold=args.verifier_supported_threshold,
+                        refuted_threshold=args.verifier_refuted_threshold,
+                        nei_threshold=args.verifier_nei_threshold,
+                    )
+                    if args.ensemble_baseline_refute_fallback:
+                        prediction = apply_baseline_refute_fallback(
+                            prediction,
+                            baseline_result,
+                            min_baseline_confidence=(
+                                args.ensemble_baseline_refute_threshold
+                            ),
+                            min_verifier_refute_probability=(
+                                args.ensemble_verifier_refute_prob_threshold
+                            ),
+                        )
+                    result = override_synthesis_with_prediction(
+                        baseline_result,
+                        prediction,
+                        retrievals,
+                    )
+                    trace.synthesis = result
             except Exception as exc:
                 logger.warning(
                     f"Claim {claim_data['id']} failed: {exc}. Defaulting to NEI."
@@ -578,6 +749,7 @@ def main():
     print(f"  Adaptive mode    : {args.adaptive}")
     print(f"  Title retrieval  : {args.enable_title_retrieval}")
     print(f"  Reranker         : {args.enable_reranker}")
+    print(f"  Trained verifier : {args.use_trained_verifier}")
     if args.exclude_train_overlap:
         print(f"  Train overlaps excluded : {excluded_count:,}")
 
@@ -650,6 +822,44 @@ def main():
         "include_source_title_in_stance": args.include_source_title_in_stance,
         "combine_same_source_evidence": args.combine_same_source_evidence,
         "same_source_max_passages": args.same_source_max_passages,
+        "use_trained_verifier": args.use_trained_verifier,
+        "verifier_model_path": args.verifier_model_path
+        if args.use_trained_verifier
+        else None,
+        "verifier_max_length": args.verifier_max_length
+        if args.use_trained_verifier
+        else None,
+        "verifier_max_passages": args.verifier_max_passages
+        if args.use_trained_verifier
+        else None,
+        "verifier_min_confidence": args.verifier_min_confidence
+        if args.use_trained_verifier
+        else None,
+        "verifier_min_margin": args.verifier_min_margin
+        if args.use_trained_verifier
+        else None,
+        "verifier_supported_threshold": args.verifier_supported_threshold
+        if args.use_trained_verifier
+        else None,
+        "verifier_refuted_threshold": args.verifier_refuted_threshold
+        if args.use_trained_verifier
+        else None,
+        "verifier_nei_threshold": args.verifier_nei_threshold
+        if args.use_trained_verifier
+        else None,
+        "ensemble_baseline_refute_fallback": args.ensemble_baseline_refute_fallback
+        if args.use_trained_verifier
+        else False,
+        "ensemble_baseline_refute_threshold": (
+            args.ensemble_baseline_refute_threshold
+            if args.use_trained_verifier and args.ensemble_baseline_refute_fallback
+            else None
+        ),
+        "ensemble_verifier_refute_prob_threshold": (
+            args.ensemble_verifier_refute_prob_threshold
+            if args.use_trained_verifier and args.ensemble_baseline_refute_fallback
+            else None
+        ),
         "nei_confidence_floor": args.nei_confidence_floor,
         "decisive_dominance_floor": args.decisive_dominance_floor,
         "refute_overrides": not args.disable_refute_overrides,
