@@ -153,6 +153,42 @@ class TestClaimDecomposer:
         assert result.atomic_claims[0].text == "Messi is from Argentina."
 
     @patch("ollama.Client.chat")
+    def test_decomposer_preserves_roman_numeral_i_in_names(self, mock_chat):
+        """Names like 'James VI and I' must not be treated as first person."""
+        mock_chat.return_value = {
+            "message": {
+                "content": (
+                    '{"atomic_claims":["James VI and I was a major advocate."], '
+                    '"reasoning": "Already atomic."}'
+                )
+            }
+        }
+
+        decomposer = ClaimDecomposer()
+        result = decomposer.decompose(
+            "James VI and I was a major advocate for a single parliament."
+        )
+
+        assert result.atomic_claims[0].text == "James VI and I was a major advocate."
+
+    @patch("ollama.Client.chat")
+    def test_decomposer_preserves_title_case_my_in_titles(self, mock_chat):
+        """Title words like 'My Life' must not be treated as first person."""
+        mock_chat.return_value = {
+            "message": {
+                "content": (
+                    '{"atomic_claims":["The Bassoon King working title was My Life."], '
+                    '"reasoning": "Already atomic."}'
+                )
+            }
+        }
+
+        decomposer = ClaimDecomposer()
+        result = decomposer.decompose("The Bassoon King working title was My Life.")
+
+        assert result.atomic_claims[0].text == "The Bassoon King working title was My Life."
+
+    @patch("ollama.Client.chat")
     def test_decomposer_ollama_failure_fallback(self, mock_chat):
         """If Ollama raises, the decomposer falls back to passthrough."""
         mock_chat.side_effect = Exception("Connection refused to Ollama server")
