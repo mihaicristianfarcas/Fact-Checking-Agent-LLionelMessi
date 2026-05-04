@@ -51,6 +51,180 @@ Bottom line: all four RFC tracks are implemented and testable. The current syste
 
 ## Latest Results
 
+### Trained FEVER Verifier Result (Best Pipeline)
+
+The final best pipeline keeps the existing RAG stack and citation guardrails,
+then overrides the final verdict with a locally trained DeBERTa verifier:
+
+```text
+claim + retrieved evidence passages -> SUPPORTED / REFUTED / NOT_ENOUGH_INFO
+```
+
+The verifier is trained on FEVER `train` only. FEVER `labelled_dev` is reserved
+for evaluation, and evaluation still uses `--exclude-train-overlap`.
+
+Best calibrated 500-claim result:
+
+| Pipeline | Accuracy | Macro F1 | ECE | Hallucinated citations | Missing citations |
+|----------|----------|----------|-----|------------------------|-------------------|
+| Baseline RAG + NLI synthesis | 0.618 | 0.597 | 0.130 | 0.0% | 0.0% |
+| Trained DeBERTa verifier, 20k fast dataset | 0.698 | 0.692 | 0.183 | 0.0% | 0.0% |
+| Calibrated trained verifier, 20k fast dataset | **0.704** | **0.701** | 0.185 | **0.0%** | **0.0%** |
+
+Final model directory:
+
+```text
+models/fever_verifier_deberta_base_20k_fast
+```
+
+Final result files:
+
+```text
+data/processed/pipeline_eval_500_baseline.json
+data/processed/pipeline_eval_500_baseline_errors.json
+data/processed/pipeline_eval_500_verifier_20k_fast.json
+data/processed/pipeline_eval_500_verifier_20k_fast_errors.json
+data/processed/pipeline_eval_500_verifier_20k_calibrated.json
+data/processed/pipeline_eval_500_verifier_20k_calibrated_errors.json
+```
+
+Interpretation: the trained verifier improves the same 500-claim evaluation by
+`+8.6` accuracy points and `+10.4` macro-F1 points over the RAG/NLI baseline,
+while preserving `0.0%` citation hallucination because citations are still
+restricted to retrieved passage IDs.
+
+### Reproducing The Trained Verifier
+
+Use a CUDA machine when possible. The dataset build is retrieval-bound and took
+about 31 minutes for 20k claims with the fast settings below; training took
+about 5.5 minutes on the RTX 4070 setup used for the final run.
+
+Check CUDA:
+
+```bat
+python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
+```
+
+Build the FEVER title index once:
+
+```bat
+python -m src.scripts.build_fever_title_index ^
+  --output data/index/fever_titles.sqlite
+```
+
+Build the verifier dataset from FEVER train only:
+
+```bat
+python -m src.scripts.build_fever_verifier_dataset ^
+  --max-claims 20000 ^
+  --title-index-path data/index/fever_titles.sqlite ^
+  --output data/processed/fever_verifier_train_20k_fast.jsonl ^
+  --dev-output data/processed/fever_verifier_dev_2k_fast.jsonl ^
+  --dev-size 2000 ^
+  --top-k 3 ^
+  --candidate-k 10 ^
+  --title-candidate-pages 3 ^
+  --title-candidate-k 10 ^
+  --retrieval-batch-size 256 ^
+  --max-passages 3
+```
+
+Train the verifier:
+
+```bat
+python -m src.model_training.train_fever_verifier ^
+  --train-file data/processed/fever_verifier_train_20k_fast.jsonl ^
+  --eval-file data/processed/fever_verifier_dev_2k_fast.jsonl ^
+  --model-name microsoft/deberta-v3-base ^
+  --output-dir models/fever_verifier_deberta_base_20k_fast ^
+  --max-length 384 ^
+  --batch-size 8 ^
+  --gradient-accumulation-steps 2 ^
+  --epochs 2 ^
+  --learning-rate 2e-5 ^
+  --class-weighting ^
+  --fp16
+```
+
+Expected verifier dev result from the final run:
+
+```text
+eval_accuracy = 0.819
+eval_macro_f1 = 0.795
+```
+
+Run the no-verifier 500-claim baseline:
+
+```bat
+python -m src.scripts.evaluate_pipeline ^
+  --max-claims 500 ^
+  --top-k 5 ^
+  --exclude-train-overlap ^
+  --skip-decomposition ^
+  --enable-title-retrieval ^
+  --enable-reranker ^
+  --candidate-k 50 ^
+  --title-index-path data/index/fever_titles.sqlite ^
+  --include-source-title-in-stance ^
+  --combine-same-source-evidence ^
+  --trace-errors-output data/processed/pipeline_eval_500_baseline_errors.json ^
+  --output data/processed/pipeline_eval_500_baseline.json
+```
+
+Run the calibrated trained-verifier 100-claim check:
+
+```bat
+python -m src.scripts.evaluate_pipeline ^
+  --max-claims 100 ^
+  --top-k 5 ^
+  --exclude-train-overlap ^
+  --skip-decomposition ^
+  --enable-title-retrieval ^
+  --enable-reranker ^
+  --candidate-k 50 ^
+  --title-index-path data/index/fever_titles.sqlite ^
+  --include-source-title-in-stance ^
+  --combine-same-source-evidence ^
+  --use-trained-verifier ^
+  --verifier-model-path models/fever_verifier_deberta_base_20k_fast ^
+  --verifier-max-passages 3 ^
+  --verifier-supported-threshold 0.70 ^
+  --verifier-refuted-threshold 0.55 ^
+  --verifier-min-margin 0.08 ^
+  --ensemble-baseline-refute-fallback ^
+  --ensemble-baseline-refute-threshold 0.82 ^
+  --ensemble-verifier-refute-prob-threshold 0.30 ^
+  --trace-errors-output data/processed/pipeline_eval_100_verifier_20k_calibrated_errors.json ^
+  --output data/processed/pipeline_eval_100_verifier_20k_calibrated.json
+```
+
+Run the final calibrated 500-claim evaluation:
+
+```bat
+python -m src.scripts.evaluate_pipeline ^
+  --max-claims 500 ^
+  --top-k 5 ^
+  --exclude-train-overlap ^
+  --skip-decomposition ^
+  --enable-title-retrieval ^
+  --enable-reranker ^
+  --candidate-k 50 ^
+  --title-index-path data/index/fever_titles.sqlite ^
+  --include-source-title-in-stance ^
+  --combine-same-source-evidence ^
+  --use-trained-verifier ^
+  --verifier-model-path models/fever_verifier_deberta_base_20k_fast ^
+  --verifier-max-passages 3 ^
+  --verifier-supported-threshold 0.70 ^
+  --verifier-refuted-threshold 0.55 ^
+  --verifier-min-margin 0.08 ^
+  --ensemble-baseline-refute-fallback ^
+  --ensemble-baseline-refute-threshold 0.82 ^
+  --ensemble-verifier-refute-prob-threshold 0.30 ^
+  --trace-errors-output data/processed/pipeline_eval_500_verifier_20k_calibrated_errors.json ^
+  --output data/processed/pipeline_eval_500_verifier_20k_calibrated.json
+```
+
 These results were run locally in the `llms` conda environment.
 
 ### Test Results
