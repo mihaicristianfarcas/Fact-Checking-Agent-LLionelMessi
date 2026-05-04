@@ -186,43 +186,63 @@ class EvidenceRetriever:
             queries, convert_to_numpy=True, show_progress_bar=len(queries) > 10
         ).tolist()
 
-        # Batch search
-        results = self._collection.query(
-            query_embeddings=query_embeddings,
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        # Convert to results
         all_results = []
-        for q_idx in range(len(queries)):
-            query_results = []
-            if results["ids"] and results["ids"][q_idx]:
-                for i, (doc_id, doc, metadata, distance) in enumerate(
-                    zip(
-                        results["ids"][q_idx],
-                        results["documents"][q_idx],
-                        results["metadatas"][q_idx],
-                        results["distances"][q_idx],
-                    )
-                ):
-                    score = 1 - distance
-                    passage = EvidencePassage(
-                        id=doc_id,
-                        text=doc,
-                        source=metadata.get("source", ""),
-                        dataset=metadata.get("dataset", ""),
-                        metadata={
-                            k: v
-                            for k, v in metadata.items()
-                            if k not in ("source", "dataset")
-                        },
-                    )
-                    query_results.append(
-                        RetrievalResult(passage=passage, score=score, rank=i + 1)
-                    )
-            all_results.append(query_results)
+        # Chroma's SQLite backend can hit "too many SQL variables" when a
+        # large query batch asks for many results per query. Keep each Chroma
+        # query comfortably below that limit while preserving caller order.
+        max_sql_variables = 900
+        query_batch_size = max(1, min(len(queries), max_sql_variables // max(1, top_k)))
 
+        if len(queries) > query_batch_size:
+            from tqdm import tqdm
+
+            batch_starts = tqdm(
+                range(0, len(queries), query_batch_size),
+                desc="Chroma query batches",
+            )
+        else:
+            batch_starts = range(0, len(queries), query_batch_size)
+
+        for batch_start in batch_starts:
+            batch_embeddings = query_embeddings[
+                batch_start : batch_start + query_batch_size
+            ]
+
+            # Batch search
+            results = self._collection.query(
+                query_embeddings=batch_embeddings,
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
+            )
+
+            # Convert to results
+            for q_idx in range(len(batch_embeddings)):
+                query_results = []
+                if results["ids"] and results["ids"][q_idx]:
+                    for i, (doc_id, doc, metadata, distance) in enumerate(
+                        zip(
+                            results["ids"][q_idx],
+                            results["documents"][q_idx],
+                            results["metadatas"][q_idx],
+                            results["distances"][q_idx],
+                        )
+                    ):
+                        score = 1 - distance
+                        passage = EvidencePassage(
+                            id=doc_id,
+                            text=doc,
+                            source=metadata.get("source", ""),
+                            dataset=metadata.get("dataset", ""),
+                            metadata={
+                                k: v
+                                for k, v in metadata.items()
+                                if k not in ("source", "dataset")
+                            },
+                        )
+                        query_results.append(
+                            RetrievalResult(passage=passage, score=score, rank=i + 1)
+                        )
+                all_results.append(query_results)
         return all_results
 
     def get_corpus_stats(self) -> dict:
