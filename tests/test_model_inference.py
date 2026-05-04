@@ -2,59 +2,42 @@
 Integration Test for Trained SFT & DPO Fact-Checking Models.
 
 Run with:
-    pytest tests/test_model_training.py -v -s
+    RUN_MODEL_INFERENCE_TESTS=1 pytest tests/test_model_inference.py -v -s
 """
 
 import os
 import pytest
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
-from src.model_training.data_prep import build_user_prompt, SYSTEM_PROMPT
 
-
-MODEL_DIR = "./models/fact_checker_dpo"
+from src.model_training.inference import DEFAULT_ADAPTER_ID, FactCheckerInference
 
 
 @pytest.fixture(scope="module")
 def fact_checker_pipeline():
     """
-    Loads the trained DPO model and tokenizer only once for the entire test module.
-    If the model hasn't been trained yet, it skips all tests in this file.
+    Loads the published DPO adapter and tokenizer only once.
+
+    This is intentionally opt-in because it downloads TinyLlama plus the LoRA
+    adapter and is too heavy for the normal unit-test loop.
     """
-    if not os.path.exists(MODEL_DIR):
-        pytest.skip(f"Trained model not found at {MODEL_DIR}. Please run the training pipeline first.")
-        
-    has_cuda = torch.cuda.is_available()
-    
-    # 1. Load Base Model
-    base_model = AutoModelForCausalLM.from_pretrained(
-        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        device_map="auto" if has_cuda else "cpu",
-        torch_dtype=torch.float16 if has_cuda else torch.float32,
-        trust_remote_code=True
-    )
-    
-    # 2. Append Custom Model Weights (LoRA)
-    model = PeftModel.from_pretrained(base_model, MODEL_DIR)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+    if os.getenv("RUN_MODEL_INFERENCE_TESTS") != "1":
+        pytest.skip("Set RUN_MODEL_INFERENCE_TESTS=1 to download and test the HF model.")
+
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    pytest.importorskip("peft")
+
+    adapter_id = os.getenv("FACTCHECK_MODEL_REPO_ID", DEFAULT_ADAPTER_ID)
+    generator = FactCheckerInference.from_pretrained(adapter_id=adapter_id)
     
     def generate_verdict(claim, evidence):
-        """Helper inference wrapper"""
-        prompt = build_user_prompt(claim, evidence)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ]
-        
-        # Format strings matching HuggingFace ChatML logic
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        
-        # Factual generation logic via greedy decoding
-        outputs = model.generate(**inputs, max_new_tokens=50, do_sample=False)
-        response = tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True)
-        return response
+        """Helper inference wrapper using the production citation guardrail."""
+        result = generator.generate_verdict(
+            claim,
+            evidence,
+            max_new_tokens=80,
+            do_sample=False,
+        )
+        return result.raw_text
         
     return generate_verdict
 
@@ -78,8 +61,8 @@ def test_fact_checker_supported_claim(fact_checker_pipeline):
 
 def test_fact_checker_dpo_abstention(fact_checker_pipeline):
     """
-    Test if the DPO pipeline successfully penalized hallucinated confidence.
-    Even though the claim is true in real life, because the evidence doesn't answer it, 
+    Test if the guarded inference path suppresses hallucinated confidence.
+    Even though the claim is true in real life, because the evidence doesn't answer it,
     it MUST output NOT_ENOUGH_INFO. 
     """
     claim = "Mount Everest is the tallest mountain on Earth."
@@ -92,7 +75,7 @@ def test_fact_checker_dpo_abstention(fact_checker_pipeline):
     
     # Verification Rules
     assert "NOT_ENOUGH_INFO" in result.upper(), (
-        "Model hallucinated! The DPO pipeline failed to suppress it from answering a known claim out-of-context. "
+        "Guarded inference failed to suppress a known claim out-of-context. "
         f"Dump: {result}"
     )
 
