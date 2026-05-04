@@ -21,12 +21,13 @@ from src.claim_processing.stance_classifier import (
 
 def _ps(
     pid="p1", stance=StanceLabel.SUPPORTING, confidence=0.90,
-    retrieval_score=0.85, rank=1, dataset="fever",
+    retrieval_score=0.85, rank=1, dataset="fever", source="TestPage",
+    metadata=None,
 ) -> PassageStance:
     return PassageStance(
         passage_id=pid,
         passage_text="Evidence text.",
-        passage_source="TestPage",
+        passage_source=source,
         passage_dataset=dataset,
         retrieval_score=retrieval_score,
         retrieval_rank=rank,
@@ -37,6 +38,7 @@ def _ps(
             "REFUTING": confidence if stance == StanceLabel.REFUTING else 0.05,
             "NEUTRAL": confidence if stance == StanceLabel.NEUTRAL else 0.05,
         },
+        passage_metadata=metadata or {},
     )
 
 
@@ -97,6 +99,26 @@ class TestVerdictSynthesizer:
 
         result = synth.synthesize("Claim.", ["Claim."], [sr])
         assert result.verdict == VERDICT_NEI
+
+    def test_neutral_passages_do_not_dilute_strong_decisive_support(self):
+        synth = VerdictSynthesizer()
+        sr = _sr("Claim.", [
+            _ps(
+                "support",
+                StanceLabel.SUPPORTING,
+                0.98,
+                retrieval_score=0.99,
+                rank=1,
+                metadata={"source_relevance": 0.95},
+            ),
+            _ps("neutral1", StanceLabel.NEUTRAL, 0.99, retrieval_score=0.98, rank=2),
+            _ps("neutral2", StanceLabel.NEUTRAL, 0.99, retrieval_score=0.97, rank=3),
+            _ps("neutral3", StanceLabel.NEUTRAL, 0.99, retrieval_score=0.96, rank=4),
+        ])
+
+        result = synth.synthesize("Claim.", ["Claim."], [sr])
+
+        assert result.verdict == VERDICT_SUPPORTED
 
     def test_no_evidence_returns_nei(self):
         synth = VerdictSynthesizer()
@@ -212,3 +234,38 @@ class TestVerdictSynthesizer:
 
         result = synth.synthesize("Claim.", ["Claim."], [sr])
         assert len(result.atomic_verdicts[0].cited_passages) <= 2
+
+    def test_weak_source_refute_does_not_override_stronger_support(self):
+        synth = VerdictSynthesizer()
+        sr = _sr("Shane Black was born in 1961.", [
+            _ps(
+                "support",
+                StanceLabel.SUPPORTING,
+                0.90,
+                retrieval_score=0.88,
+                rank=1,
+                source="Shane_Black",
+                metadata={"source_relevance": 0.96, "title_match_type": "exact"},
+            ),
+            _ps(
+                "weak-refute",
+                StanceLabel.REFUTING,
+                0.96,
+                retrieval_score=0.95,
+                rank=2,
+                source="Shane_Blackett",
+                metadata={
+                    "source_relevance": 0.25,
+                    "title_match_type": "token_fts",
+                    "rerank_score": 0.95,
+                },
+            ),
+        ])
+
+        result = synth.synthesize(
+            "Shane Black was born in 1961.",
+            ["Shane Black was born in 1961."],
+            [sr],
+        )
+
+        assert result.verdict != VERDICT_REFUTED
