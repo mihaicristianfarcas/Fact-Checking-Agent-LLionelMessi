@@ -77,6 +77,18 @@ Final model directory:
 models/fever_verifier_deberta_base_20k_fast
 ```
 
+Hosted Hugging Face model:
+
+```text
+vasiledraguta/deberta-v3-base-fever-verifier-20k-finetuned
+```
+
+Model page:
+
+```text
+https://huggingface.co/vasiledraguta/deberta-v3-base-fever-verifier-20k-finetuned
+```
+
 Final result files:
 
 ```text
@@ -151,6 +163,61 @@ Expected verifier dev result from the final run:
 ```text
 eval_accuracy = 0.819
 eval_macro_f1 = 0.795
+```
+
+Use the hosted model without retraining:
+
+```bat
+python -m src.scripts.evaluate_pipeline ^
+  --max-claims 100 ^
+  --top-k 5 ^
+  --exclude-train-overlap ^
+  --skip-decomposition ^
+  --enable-title-retrieval ^
+  --enable-reranker ^
+  --candidate-k 50 ^
+  --title-index-path data/index/fever_titles.sqlite ^
+  --include-source-title-in-stance ^
+  --combine-same-source-evidence ^
+  --use-trained-verifier ^
+  --verifier-model-path vasiledraguta/deberta-v3-base-fever-verifier-20k-finetuned ^
+  --verifier-max-passages 3 ^
+  --verifier-supported-threshold 0.70 ^
+  --verifier-refuted-threshold 0.55 ^
+  --verifier-min-margin 0.08 ^
+  --ensemble-baseline-refute-fallback ^
+  --ensemble-baseline-refute-threshold 0.82 ^
+  --ensemble-verifier-refute-prob-threshold 0.30 ^
+  --trace-errors-output data/processed/pipeline_eval_100_hf_verifier_calibrated_errors.json ^
+  --output data/processed/pipeline_eval_100_hf_verifier_calibrated.json
+```
+
+Direct Transformers usage:
+
+```python
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+model_id = "vasiledraguta/deberta-v3-base-fever-verifier-20k-finetuned"
+
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForSequenceClassification.from_pretrained(model_id)
+model.eval()
+
+text = """Claim: Lionel Messi has won the FIFA World Cup.
+
+Evidence:
+[1] Source: Lionel Messi
+Lionel Messi captained Argentina to victory in the 2022 FIFA World Cup."""
+
+inputs = tokenizer(text, truncation=True, max_length=384, return_tensors="pt")
+
+with torch.no_grad():
+    logits = model(**inputs).logits
+    probs = torch.softmax(logits, dim=-1)[0]
+
+label_id = int(probs.argmax())
+print(model.config.id2label[label_id], float(probs[label_id]))
 ```
 
 Run the no-verifier 500-claim baseline:
