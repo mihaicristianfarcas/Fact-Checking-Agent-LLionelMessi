@@ -42,6 +42,7 @@ def main(args):
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"  # Causal LM: pad from left so eos isn't mid-sequence
 
     # Setup model loading — 4-bit QLoRA on CUDA, fp16 on MPS, fp32 on CPU
     if has_cuda:
@@ -89,6 +90,14 @@ def main(args):
             r=16, lora_alpha=32, target_modules=["q_proj", "v_proj"], task_type="CAUSAL_LM"
         )
         model = get_peft_model(model, peft_config)
+
+    # TinyLlama's config.json declares torch_dtype=bfloat16, so LoRA params
+    # inherit bf16 even when the base model is loaded in fp16/4-bit.  Cast all
+    # trainable params to fp16 so gradient computation stays in fp16 throughout.
+    if has_cuda:
+        for param in model.parameters():
+            if param.requires_grad and param.dtype == torch.bfloat16:
+                param.data = param.data.to(torch.float16)
 
     # Load Dataset
     logger.info("Loading DPO dataset...")
@@ -142,15 +151,19 @@ def main(args):
         gradient_accumulation_steps=8,
         learning_rate=1e-5, # DPO learning rate is usually lower than SFT
         logging_steps=10,
+        warmup_steps=100,
         max_steps=args.max_steps if args.max_steps else -1,
         num_train_epochs=args.epochs if not args.max_steps else 1,
         eval_strategy="epoch",
         remove_unused_columns=False, # Required for DPO Trainer
-        optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
+        # paged_adamw_8bit is CUDA-only; fall back to standard AdamW on MPS/CPU.
+        optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
         # dataloader workers: GPU pipelining only helps when CUDA is available.
         dataloader_num_workers=2 if has_cuda else 0,
-        fp16=False, # Disable GradScaler to bypass TinyLlama bfloat16 poisoning
-        bf16=False,
+        # pin_memory is not supported on MPS and triggers a warning.
+        dataloader_pin_memory=has_cuda,
+        fp16=False,  # Must stay False — TinyLlama config.json inits LoRA params as bf16,
+        bf16=False,  # and GradScaler can't unscale bf16 grads. We cast params to fp16 below instead.
         use_cpu=device == "cpu",
         report_to="none",
         beta=0.4 # Increased KL penalty to more aggressively punish hallucinations

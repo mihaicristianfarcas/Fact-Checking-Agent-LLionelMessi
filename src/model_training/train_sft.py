@@ -34,6 +34,7 @@ def main(args):
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"  # Causal LM: pad from left so eos isn't mid-sequence
 
     # Setup model loading — 4-bit QLoRA on CUDA, fp16 on MPS, fp32 on CPU
     if has_cuda:
@@ -83,6 +84,14 @@ def main(args):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
+    # TinyLlama's config.json declares torch_dtype=bfloat16, so LoRA params
+    # inherit bf16 even when the base model is loaded in fp16/4-bit.  Cast all
+    # trainable params to fp16 so gradient computation stays in fp16 throughout.
+    if has_cuda:
+        for param in model.parameters():
+            if param.requires_grad and param.dtype == torch.bfloat16:
+                param.data = param.data.to(torch.float16)
+
     # Load Dataset
     logger.info("Loading SFT dataset...")
     train_dataset = prepare_sft_dataset("data/processed/train.jsonl", tokenizer=tokenizer, max_samples=args.max_samples)
@@ -98,19 +107,23 @@ def main(args):
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
         logging_steps=10,
+        warmup_steps=100,
         max_steps=args.max_steps if args.max_steps else -1,
         num_train_epochs=args.epochs if not args.max_steps else 1,
         eval_strategy="epoch",  # Evaluates once exactly at the end
         save_strategy="epoch",  # Saves backup once exactly at the end
-        optim="paged_adamw_8bit", # 8-bit math frees VRAM allowing faster throughput mapping
+        # paged_adamw_8bit is CUDA-only; fall back to standard AdamW on MPS/CPU.
+        optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
         # dataloader workers: GPU pipelining only helps when CUDA is available.
         dataloader_num_workers=2 if has_cuda else 0,
-        fp16=False, # <-- MUST BE FALSE. Disable GradScaler to bypass TinyLlama config.json bfloat16 poisoning
-        bf16=False,
+        # pin_memory is not supported on MPS and triggers a warning.
+        dataloader_pin_memory=has_cuda,
+        fp16=False,  # Must stay False — TinyLlama config.json inits LoRA params as bf16,
+        bf16=False,  # and GradScaler can't unscale bf16 grads. We cast params to fp16 below instead.
         use_cpu=device == "cpu",
         report_to="none", # Turn off wandb for local debug
         # Explicit context length — TinyLlama supports 2048; evidence prompts can be long.
-        max_seq_length=2048,
+        max_length=2048,
     )
 
     # SFT Trainer
