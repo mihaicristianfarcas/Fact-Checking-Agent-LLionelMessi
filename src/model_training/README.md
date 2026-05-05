@@ -12,6 +12,7 @@ Owns the SFT (Supervised Fine-Tuning) and DPO (Direct Preference Optimization) t
 | DPO Adapter | `models/fact_checker_dpo/` | Final LoRA weights mathematically optimized to penalize hallucinations. |
 | SFT Script  | `src/model_training/train_sft.py` | Standalone SFT trainer using `SFTConfig` and 4-Bit options. |
 | DPO Script  | `src/model_training/train_dpo.py` | Standalone DPO trainer to align preferences. |
+| HF Inference Wrapper | `src/model_training/inference.py` | Loads the published DPO LoRA adapter from Hugging Face. |
 
 ---
 
@@ -40,11 +41,31 @@ Both `train_sft` and `train_dpo` share the same interface for scaling from lapto
 
 ### Validating the Model (Inference / Pytest)
 
-Once you have generated the `./models/fact_checker_dpo/` adapters, you can automatically mount them to test the intelligence of the model!
+The final adapter is published at `andreiungureanu/Fact-Checking-Agent-LLionelMessi` and loads on top of `TinyLlama/TinyLlama-1.1B-Chat-v1.0`.
+
+```python
+from src.model_training.inference import load_fact_checker
+
+model = load_fact_checker()
+result = model.generate_verdict(
+    "Water is composed of two hydrogen atoms and one oxygen atom.",
+    [{"id": "chem_1", "text": "Water has the chemical formula H2O."}],
+)
+print(result.verdict)
+print(result.raw_text)
+```
+
+Quick formatting/parsing checks do not download the model:
+
+```bash
+pytest tests/test_model_prompting.py -v
+```
+
+The real inference suite downloads TinyLlama plus the LoRA adapter, so it is opt-in:
 
 ```bash
 # Run the Pytest evaluation suite to aggressively test Abstention logic
-pytest tests/test_model_inference.py -v -s
+RUN_MODEL_INFERENCE_TESTS=1 pytest tests/test_model_inference.py -v -s
 ```
 
 ---

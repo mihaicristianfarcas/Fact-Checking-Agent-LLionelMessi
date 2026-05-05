@@ -9,7 +9,11 @@ Run with:
 
 from unittest.mock import MagicMock
 
-from src.agent.orchestrator import FactCheckAgent, PipelineTrace
+from src.agent.orchestrator import (
+    FactCheckAgent,
+    PipelineTrace,
+    combine_same_source_evidence,
+)
 from src.claim_processing.decomposer import (
     AtomicClaim,
     ClaimDecomposer,
@@ -169,3 +173,46 @@ class TestFactCheckAgent:
         agent = self._agent()
         result = agent.check("Claim.")
         assert result.hallucinated_citations == []
+
+    def test_combine_same_source_evidence_keeps_citable_primary_id(self):
+        retrievals = [
+            RetrievalResult(
+                passage=EvidencePassage(
+                    id="p1",
+                    text="Bell released an EP in 2011.",
+                    source="Drake_Bell",
+                    dataset="fever",
+                    metadata={"source_relevance": 0.95},
+                ),
+                score=0.90,
+                rank=1,
+            ),
+            RetrievalResult(
+                passage=EvidencePassage(
+                    id="p2",
+                    text="Drake Bell is an American actor and musician.",
+                    source="Drake_Bell",
+                    dataset="fever",
+                    metadata={"source_relevance": 1.0},
+                ),
+                score=0.80,
+                rank=2,
+            ),
+            RetrievalResult(
+                passage=EvidencePassage(
+                    id="p3",
+                    text="Other evidence.",
+                    source="Other_Page",
+                    dataset="fever",
+                ),
+                score=0.70,
+                rank=3,
+            ),
+        ]
+
+        combined = combine_same_source_evidence(retrievals)
+
+        assert len(combined) == 2
+        assert combined[0].passage.id == "p1"
+        assert "Drake Bell is an American" in combined[0].passage.text
+        assert combined[0].passage.metadata["combined_passage_ids"] == ["p1", "p2"]

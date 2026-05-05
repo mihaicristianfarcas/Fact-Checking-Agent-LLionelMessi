@@ -18,6 +18,7 @@ def _make_passage_stance(
     rank=1,
     stance=StanceLabel.SUPPORTING,
     confidence=0.90,
+    metadata=None,
 ) -> PassageStance:
     return PassageStance(
         passage_id=passage_id,
@@ -33,6 +34,7 @@ def _make_passage_stance(
             "REFUTING": confidence if stance == StanceLabel.REFUTING else 0.05,
             "NEUTRAL": confidence if stance == StanceLabel.NEUTRAL else 0.05,
         },
+        passage_metadata=metadata or {},
     )
 
 
@@ -118,3 +120,19 @@ class TestCredibilityScorer:
         batch = CredibilityScorer().score_batch([sr, sr, sr])
         assert len(batch) == 3
         assert all(len(b) == 1 for b in batch)
+
+    def test_source_relevance_penalizes_weak_refutations(self):
+        weak_refute = _make_passage_stance(
+            passage_id="weak-refute",
+            stance=StanceLabel.REFUTING,
+            metadata={"source_relevance": 0.20},
+        )
+        strong_refute = _make_passage_stance(
+            passage_id="strong-refute",
+            stance=StanceLabel.REFUTING,
+            metadata={"source_relevance": 0.95},
+        )
+        sr = _make_stance_result([weak_refute, strong_refute])
+        scored = CredibilityScorer().score(sr)
+
+        assert scored[0].credibility < scored[1].credibility

@@ -10,10 +10,12 @@ This module provides:
 
 from .datasets.base import Claim, EvidencePassage, Verdict
 from .retriever.evidence_retriever import EvidenceRetriever
+from .retriever.hybrid_retriever import HybridEvidenceRetriever
 
 __all__ = [
     "Claim",
     "EvidencePassage",
     "Verdict",
     "EvidenceRetriever",
+    "HybridEvidenceRetriever",
 ]

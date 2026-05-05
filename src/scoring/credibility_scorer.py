@@ -10,6 +10,9 @@ combination of signals already available in the pipeline:
     3. Retrieval score  — raw cosine similarity from the vector search.
     4. Stance confidence — passages where the NLI model is more confident
                           are treated as more informative (regardless of label).
+    5. Source relevance — optional retriever metadata that estimates whether
+                          the Wikipedia page title is actually about the claim
+                          entity instead of a fuzzy same-name distraction.
 
 The scorer does NOT fetch external metadata, call APIs, or require a model.
 It is a deterministic, fast heuristic that can be swapped for a learned scorer
@@ -27,7 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from src.claim_processing.stance_classifier import PassageStance, StanceResult
+from src.claim_processing.stance_classifier import PassageStance, StanceLabel, StanceResult
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,11 @@ class CredibilityScorer:
         stance_weight: float = 0.30,
         prior_weight: float = 0.20,
         rank_weight: float = 0.20,
+        use_source_relevance: bool = True,
     ) -> None:
         self.dataset_priors = dataset_priors or _DATASET_PRIORS
         self.rank_decay = rank_decay
+        self.use_source_relevance = use_source_relevance
 
         total = retrieval_weight + stance_weight + prior_weight + rank_weight
         if total <= 0:
@@ -108,6 +113,8 @@ class CredibilityScorer:
                 + self.w_retrieval * retrieval_signal
                 + self.w_stance * stance_signal
             )
+            if self.use_source_relevance:
+                credibility *= self._source_relevance_factor(ps)
             credibility = max(0.0, min(1.0, credibility))
 
             scored.append(ScoredPassage(stance=ps, credibility=credibility))
@@ -125,3 +132,23 @@ class CredibilityScorer:
     ) -> list[list[ScoredPassage]]:
         """Score multiple StanceResults."""
         return [self.score(sr) for sr in stance_results]
+
+    def _source_relevance_factor(self, ps: PassageStance) -> float:
+        """Return a multiplier from retriever source relevance metadata."""
+        relevance = _metadata_float(ps.passage_metadata, "source_relevance", 1.0)
+        relevance = max(0.0, min(1.0, relevance))
+
+        # Contradictions from fuzzy title matches are the main observed error
+        # mode. Support still gets relevance-aware weighting, but less harshly.
+        if ps.stance == StanceLabel.REFUTING:
+            return 0.25 + 0.75 * relevance
+        if ps.stance == StanceLabel.SUPPORTING:
+            return 0.45 + 0.55 * relevance
+        return 0.60 + 0.40 * relevance
+
+
+def _metadata_float(metadata: dict, key: str, default: float) -> float:
+    try:
+        return float(metadata.get(key, default))
+    except (TypeError, ValueError):
+        return default

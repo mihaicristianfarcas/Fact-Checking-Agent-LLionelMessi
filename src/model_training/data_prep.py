@@ -5,15 +5,10 @@ from pathlib import Path
 from typing import List, Dict, Any
 from datasets import Dataset
 
+from src.model_training.prompting import SYSTEM_PROMPT, build_user_prompt
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = (
-    "You are an expert fact-checking agent. Your task is to review a given Claim along with a list of Evidence passages. "
-    "You must output a Verdict of either SUPPORTED, REFUTED, or NOT_ENOUGH_INFO. "
-    "You must also provide a short explanation, citing the specific evidence IDs used (e.g., [source_id]). "
-    "If the evidence does not clearly support or refute the claim, you must choose NOT_ENOUGH_INFO and explain why."
-)
 
 def load_jsonl(filepath: str | Path) -> List[Dict]:
     """Loads a JSONL file."""
@@ -23,18 +18,6 @@ def load_jsonl(filepath: str | Path) -> List[Dict]:
             if line.strip():
                 data.append(json.loads(line))
     return data
-
-def build_user_prompt(claim: str, evidence_passages: List[Dict]) -> str:
-    """Builds the user prompt containing the claim and evidence."""
-    prompt = f"Claim: {claim}\n\nEvidence:\n"
-    if not evidence_passages:
-        prompt += "None.\n"
-    else:
-        for ev in evidence_passages:
-            evidence_id = ev.get("id", "unknown")
-            text = ev.get("text", "")
-            prompt += f"[{evidence_id}]: {text}\n"
-    return prompt
 
 _SUPPORTED_TEMPLATES = [
     "The claim is supported by the provided evidence {citations}.",

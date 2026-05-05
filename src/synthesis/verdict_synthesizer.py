@@ -118,12 +118,24 @@ class VerdictSynthesizer:
         refute_overrides: bool = True,
         decisive_dominance_floor: float = 0.60,
         max_citations_per_claim: int = 2,
+        min_refuting_passages: int = 1,
+        single_refute_confidence_floor: float = 0.0,
+        refute_source_relevance_floor: float = 0.55,
+        refute_conflict_margin: float = 0.15,
+        use_decisive_confidence: bool = True,
+        min_decisive_weight: float = 0.45,
     ) -> None:
         self.scorer = credibility_scorer or CredibilityScorer()
         self.nei_floor = nei_confidence_floor
         self.refute_overrides = refute_overrides
         self.dominance_floor = decisive_dominance_floor
         self.max_citations_per_claim = max_citations_per_claim
+        self.min_refuting_passages = min_refuting_passages
+        self.single_refute_confidence_floor = single_refute_confidence_floor
+        self.refute_source_relevance_floor = refute_source_relevance_floor
+        self.refute_conflict_margin = refute_conflict_margin
+        self.use_decisive_confidence = use_decisive_confidence
+        self.min_decisive_weight = min_decisive_weight
 
     def synthesize(
         self,
@@ -242,15 +254,47 @@ class VerdictSynthesizer:
             winner_passages = supporting_passages
 
         decisive_total = supporting_weight + refuting_weight
-        conf = winner_weight / total_weight if total_weight else 0.0
         dominance = winner_weight / decisive_total if decisive_total else 0.0
+        coverage_conf = winner_weight / total_weight if total_weight else 0.0
+        if self.use_decisive_confidence:
+            strength = min(1.0, winner_weight / max(self.min_decisive_weight, 1e-9))
+            conf = min(1.0, 0.70 * dominance + 0.30 * strength)
+        else:
+            conf = coverage_conf
         cited = self._select_citations(winner_passages)
 
         # Commit only when the winning evidence is both strong overall and
         # clearly dominates the opposing decisive evidence.
-        if conf < self.nei_floor or dominance < self.dominance_floor:
+        if (
+            conf < self.nei_floor
+            or dominance < self.dominance_floor
+            or winner_weight < self.min_decisive_weight
+        ):
             verdict = VERDICT_NEI
             cited = []
+
+        if verdict == VERDICT_REFUTED:
+            verdict, conf, cited = self._guard_weak_source_refute(
+                verdict=verdict,
+                confidence=conf,
+                total_weight=total_weight,
+                supporting_weight=supporting_weight,
+                refuting_weight=refuting_weight,
+                supporting_passages=supporting_passages,
+                refuting_passages=refuting_passages,
+            )
+
+        if verdict == VERDICT_REFUTED and self.min_refuting_passages > 1:
+            strongest_refute = max(
+                (sp.stance.confidence for sp in refuting_passages),
+                default=0.0,
+            )
+            if (
+                len(refuting_passages) < self.min_refuting_passages
+                and strongest_refute < self.single_refute_confidence_floor
+            ):
+                verdict = VERDICT_NEI
+                cited = []
 
         return AtomicVerdict(
             claim_text=claim_text,
@@ -292,6 +336,7 @@ class VerdictSynthesizer:
             winning_passages,
             key=lambda sp: (
                 self._source_penalty(sp.stance.passage_source),
+                -self._source_relevance(sp),
                 -sp.weighted_confidence,
                 sp.stance.retrieval_rank,
             ),
@@ -320,6 +365,80 @@ class VerdictSynthesizer:
             "disambiguation" in source_lower
             or "-lrb-disambiguation-rrb-" in source_lower
         )
+
+    def _guard_weak_source_refute(
+        self,
+        *,
+        verdict: str,
+        confidence: float,
+        total_weight: float,
+        supporting_weight: float,
+        refuting_weight: float,
+        supporting_passages: list[ScoredPassage],
+        refuting_passages: list[ScoredPassage],
+    ) -> tuple[str, float, list[str]]:
+        """Prevent fuzzy-title contradictions from overriding better sources."""
+        if verdict != VERDICT_REFUTED or not refuting_passages:
+            return verdict, confidence, self._select_citations(refuting_passages)
+
+        strong_refutes = [
+            sp for sp in refuting_passages if self._is_high_relevance_refute(sp)
+        ]
+        best_refute_rel = max(
+            (self._source_relevance(sp) for sp in refuting_passages),
+            default=1.0,
+        )
+        best_support_rel = max(
+            (self._source_relevance(sp) for sp in supporting_passages),
+            default=0.0,
+        )
+
+        # If a stronger source supports the claim, weak fuzzy-title refutations
+        # should not flip the verdict unless they have source/rerank quality too.
+        if supporting_passages and not strong_refutes:
+            support_is_stronger_source = (
+                best_support_rel >= best_refute_rel + self.refute_conflict_margin
+            )
+            support_is_material = supporting_weight >= 0.35 * max(refuting_weight, 1e-9)
+            if support_is_stronger_source and support_is_material:
+                support_conf = supporting_weight / total_weight if total_weight else 0.0
+                decisive_total = supporting_weight + refuting_weight
+                support_dominance = (
+                    supporting_weight / decisive_total if decisive_total else 0.0
+                )
+                if support_conf >= self.nei_floor and support_dominance >= self.dominance_floor:
+                    return (
+                        VERDICT_SUPPORTED,
+                        support_conf,
+                        self._select_citations(supporting_passages),
+                    )
+                return VERDICT_NEI, confidence, []
+
+            if best_refute_rel < self.refute_source_relevance_floor:
+                return VERDICT_NEI, confidence, []
+
+        # With no counter-support, only the weakest source matches are downgraded.
+        if not strong_refutes and best_refute_rel < 0.35:
+            return VERDICT_NEI, confidence, []
+
+        return VERDICT_REFUTED, confidence, self._select_citations(refuting_passages)
+
+    def _is_high_relevance_refute(self, sp: ScoredPassage) -> bool:
+        relevance = self._source_relevance(sp)
+        if relevance < self.refute_source_relevance_floor:
+            return False
+
+        metadata = sp.stance.passage_metadata
+        rerank_score = _metadata_float(metadata, "rerank_score", sp.stance.retrieval_score)
+        title_score = _metadata_float(metadata, "title_score", 0.0)
+        return (
+            sp.stance.confidence >= 0.80
+            or rerank_score >= 0.75
+            or title_score >= 0.75
+        )
+
+    def _source_relevance(self, sp: ScoredPassage) -> float:
+        return _metadata_float(sp.stance.passage_metadata, "source_relevance", 1.0)
 
     def _collect_citations(self, atomic_verdicts: list[AtomicVerdict]) -> list[str]:
         """Deduplicated list of all cited passage IDs."""
@@ -363,3 +482,10 @@ class VerdictSynthesizer:
         action = "supported" if verdict == VERDICT_SUPPORTED else "refuted"
         header = f"The claim is {action} (confidence: {confidence:.0%}). "
         return header + " ".join(parts)
+
+
+def _metadata_float(metadata: dict, key: str, default: float) -> float:
+    try:
+        return float(metadata.get(key, default))
+    except (TypeError, ValueError):
+        return default

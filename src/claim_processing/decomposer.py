@@ -407,9 +407,6 @@ class ClaimDecomposer:
         • order-preserving deduplication
         """
         results: list[str] = []
-        first_person_re = re.compile(
-            r"\b(I|me|my|mine|we|our|ours|us)\b", re.IGNORECASE
-        )
 
         for text in texts:
             text = text.strip().rstrip(".")
@@ -420,7 +417,7 @@ class ClaimDecomposer:
                 logger.debug("Dropping empty/trivial sub-claim: %r", text)
                 continue
 
-            if first_person_re.search(text):
+            if self._looks_like_first_person_meta_claim(text):
                 logger.warning(
                     "Dropping sub-claim with first-person pronoun: %r", text
                 )
@@ -443,6 +440,25 @@ class ClaimDecomposer:
                 deduped.append(t)
 
         return deduped
+
+    def _looks_like_first_person_meta_claim(self, text: str) -> bool:
+        """Detect LLM meta-commentary without rejecting proper nouns/titles.
+
+        The previous broad first-person regex rejected valid claims such as
+        "James VI and I ..." and title mentions like "My Life".  Here we only
+        drop obvious model commentary ("I think...", "we believe...") or
+        lowercase first-person pronouns unlikely to be part of a proper noun.
+        """
+        stripped = text.strip()
+        lower = stripped.lower()
+
+        if re.match(
+            r"^(i|we)\s+(think|believe|feel|assume|know|guess|would|will|can|cannot|can't)\b",
+            lower,
+        ):
+            return True
+
+        return bool(re.search(r"\b(i|me|my|mine|we|our|ours|us)\b", stripped))
 
     def _build_result(
         self,

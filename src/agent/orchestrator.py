@@ -30,6 +30,7 @@ from typing import Optional
 
 from src.claim_processing.decomposer import ClaimDecomposer, DecompositionResult
 from src.claim_processing.stance_classifier import StanceClassifier, StanceResult
+from src.data_ingestion.datasets.base import EvidencePassage
 from src.data_ingestion.retriever.evidence_retriever import (
     EvidenceRetriever,
     RetrievalResult,
@@ -107,6 +108,8 @@ class FactCheckAgent:
         adaptive            : Enable adaptive routing heuristics.
         low_score_threshold : In adaptive mode, retrieve extra if top score is
                               below this threshold.
+        combine_same_source_evidence: If True, classify compact same-source
+                              sentence windows instead of isolated sentences.
     """
 
     def __init__(
@@ -119,6 +122,9 @@ class FactCheckAgent:
         top_k: int = 5,
         adaptive: bool = False,
         low_score_threshold: float = 0.30,
+        combine_same_source_evidence: bool = False,
+        same_source_max_passages: int = 3,
+        same_source_max_chars: int = 1200,
     ) -> None:
         self.decomposer = decomposer
         self.retriever = retriever
@@ -130,6 +136,9 @@ class FactCheckAgent:
         self.top_k = top_k
         self.adaptive = adaptive
         self.low_score_threshold = low_score_threshold
+        self.combine_same_source_evidence = combine_same_source_evidence
+        self.same_source_max_passages = same_source_max_passages
+        self.same_source_max_chars = same_source_max_chars
 
         self._components_initialized = False
 
@@ -201,9 +210,18 @@ class FactCheckAgent:
         stance_results: list[StanceResult] = []
         for ac_text in atomic_texts:
             retrievals = trace.retrievals[ac_text]
-            sr = self.stance_classifier.classify(ac_text, retrievals)
+            stance_retrievals = retrievals
+            if self.combine_same_source_evidence:
+                stance_retrievals = combine_same_source_evidence(
+                    retrievals,
+                    max_passages_per_source=self.same_source_max_passages,
+                    max_chars=self.same_source_max_chars,
+                )
+            sr = self.stance_classifier.classify(ac_text, stance_retrievals)
             trace.stance_results[ac_text] = sr
             stance_results.append(sr)
+        if self.combine_same_source_evidence:
+            trace.steps_executed.append("combine_same_source_evidence")
         trace.steps_executed.append("stance_classify")
 
         # ── Step 4: Synthesize (credibility scoring happens inside) ───────
@@ -233,3 +251,117 @@ class FactCheckAgent:
     ) -> list[PipelineTrace]:
         """Fact-check multiple claims and return all traces."""
         return [self.check_with_trace(c) for c in claims]
+
+
+def combine_same_source_evidence(
+    retrievals: list[RetrievalResult],
+    *,
+    max_passages_per_source: int = 3,
+    max_chars: int = 1200,
+) -> list[RetrievalResult]:
+    """Collapse same-source passages into compact stance-classification windows.
+
+    The combined passage keeps the best original passage ID as its citation ID,
+    so downstream citation checks still only cite retrieved passage IDs.
+    """
+    if max_passages_per_source <= 1:
+        return retrievals
+
+    by_source: dict[str, list[RetrievalResult]] = {}
+    source_order: list[str] = []
+    for result in retrievals:
+        source = result.passage.source or result.passage.id
+        if source not in by_source:
+            source_order.append(source)
+            by_source[source] = []
+        by_source[source].append(result)
+
+    combined: list[RetrievalResult] = []
+    for source in source_order:
+        group = sorted(by_source[source], key=lambda r: r.rank)
+        if len(group) == 1:
+            combined.append(group[0])
+            continue
+
+        selected = group[:max_passages_per_source]
+        primary = max(selected, key=lambda r: r.score)
+        text_parts: list[str] = []
+        seen_texts: set[str] = set()
+        for item in selected:
+            text = item.passage.text.strip()
+            if not text or text in seen_texts:
+                continue
+            seen_texts.add(text)
+            text_parts.append(text)
+
+        text = " ".join(text_parts)
+        if len(text) > max_chars:
+            text = text[:max_chars].rsplit(" ", 1)[0].rstrip()
+
+        metadata = _merge_group_metadata(selected)
+        metadata["combined_same_source"] = True
+        metadata["combined_passage_ids"] = [item.passage.id for item in selected]
+        metadata["combined_source_size"] = len(selected)
+        passage = EvidencePassage(
+            id=primary.passage.id,
+            text=text,
+            source=primary.passage.source,
+            dataset=primary.passage.dataset,
+            metadata=metadata,
+        )
+        combined.append(
+            RetrievalResult(
+                passage=passage,
+                score=max(item.score for item in selected),
+                rank=min(item.rank for item in selected),
+            )
+        )
+
+    combined.sort(key=lambda r: r.rank)
+    return [
+        RetrievalResult(passage=r.passage, score=r.score, rank=i + 1)
+        for i, r in enumerate(combined)
+    ]
+
+
+def _merge_group_metadata(group: list[RetrievalResult]) -> dict:
+    metadata: dict = {}
+    retrieval_methods: set[str] = set()
+    for item in group:
+        item_meta = dict(item.passage.metadata or {})
+        for key, value in item_meta.items():
+            if key == "retrieval_methods":
+                retrieval_methods.update(_as_list(value))
+                continue
+            if key == "retrieval_method":
+                retrieval_methods.update(_as_list(value))
+            if key not in metadata:
+                metadata[key] = value
+        if "source_relevance" in item_meta:
+            metadata["source_relevance"] = max(
+                _as_float(metadata.get("source_relevance"), 0.0),
+                _as_float(item_meta.get("source_relevance"), 0.0),
+            )
+        if "rerank_score" in item_meta:
+            metadata["rerank_score"] = max(
+                _as_float(metadata.get("rerank_score"), 0.0),
+                _as_float(item_meta.get("rerank_score"), 0.0),
+            )
+    if retrieval_methods:
+        metadata["retrieval_methods"] = sorted(retrieval_methods)
+    return metadata
+
+
+def _as_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _as_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

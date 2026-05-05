@@ -25,6 +25,7 @@ venv/
 ENV/
 env/
 .venv/
+venv*/
 
 # IDE
 .idea/
@@ -45,6 +46,10 @@ htmlcov/
 # Data (large files - download separately)
 data/raw/
 data/index/
+data/processed/*eval*.json
+data/processed/pipeline_eval_*.json
+data/processed/*trace*.json
+data/processed/fever_verifier_*.jsonl
 *.db
 *.sqlite
 
@@ -70,3 +75,4 @@ logs/
 # Temporary
 tmp/
 temp/
+copilot-session-*.md

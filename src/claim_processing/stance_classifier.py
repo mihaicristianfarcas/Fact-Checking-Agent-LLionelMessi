@@ -129,6 +129,8 @@ class PassageStance:
         stance           : SUPPORTING | REFUTING | NEUTRAL.
         confidence       : Probability of the predicted stance label (0-1).
         raw_scores       : Full {label: prob} dict for all three labels.
+        passage_metadata : Retrieval metadata from Task A, preserved for
+                           downstream scoring/debug heuristics.
     """
 
     passage_id: str
@@ -140,6 +142,7 @@ class PassageStance:
     stance: StanceLabel
     confidence: float
     raw_scores: dict[str, float] = field(default_factory=dict)
+    passage_metadata: dict = field(default_factory=dict)
 
     def is_decisive(self, threshold: float = _CONFIDENCE_THRESHOLD) -> bool:
         """True if the stance is non-neutral AND confidence exceeds threshold."""
@@ -218,6 +221,7 @@ class StanceResult:
                     "confidence": round(ps.confidence, 4),
                     "retrieval_score": round(ps.retrieval_score, 4),
                     "source": ps.passage_source,
+                    "source_relevance": ps.passage_metadata.get("source_relevance"),
                 }
                 for ps in self.passage_stances
             ],
@@ -268,6 +272,9 @@ class StanceClassifier:
         confidence_threshold: Min probability to treat a label as decisive;
                               below this, the label is collapsed to NEUTRAL.
         max_length          : Max tokenizer sequence length (model cap is 512).
+        include_source_title_in_premise: Prepend the page/source title to the
+                              NLI premise so pronoun-heavy FEVER sentences keep
+                              enough page context.
     """
 
     # DeBERTa-v3 NLI label order as returned by the HuggingFace checkpoint.
@@ -288,11 +295,13 @@ class StanceClassifier:
         batch_size: int = 16,
         confidence_threshold: float = _CONFIDENCE_THRESHOLD,
         max_length: int = 512,
+        include_source_title_in_premise: bool = False,
     ) -> None:
         self.model_name = model_name
         self.batch_size = batch_size
         self.confidence_threshold = confidence_threshold
         self.max_length = max_length
+        self.include_source_title_in_premise = include_source_title_in_premise
 
         # Device selection
         if device is not None:
@@ -354,7 +363,7 @@ class StanceClassifier:
         # Build (premise, hypothesis) pairs for the NLI model.
         # Convention: premise = evidence passage, hypothesis = claim to verify.
         pairs: list[tuple[str, str]] = [
-            (r.passage.text, claim) for r in retrievals
+            (self._premise_text(r), claim) for r in retrievals
         ]
 
         # Run inference in batches.
@@ -461,6 +470,24 @@ class StanceClassifier:
 
         return all_probs
 
+    def _premise_text(self, retrieval: "_RetrievalResultProtocol") -> str:
+        """Return the text sent to the NLI model for one retrieved passage."""
+        text = retrieval.passage.text
+        if not self.include_source_title_in_premise:
+            return text
+
+        source = getattr(retrieval.passage, "source", "") or ""
+        if not source:
+            return text
+        source = (
+            source.replace("_", " ")
+            .replace("-LRB-", "(")
+            .replace("-RRB-", ")")
+            .replace("-LSB-", "[")
+            .replace("-RSB-", "]")
+        )
+        return f"{source}. {text}"
+
     def _build_passage_stance(
         self,
         retrieval: "_RetrievalResultProtocol",
@@ -509,6 +536,7 @@ class StanceClassifier:
             stance=final_stance,
             confidence=final_confidence,
             raw_scores=raw_scores,
+            passage_metadata=dict(getattr(retrieval.passage, "metadata", {}) or {}),
         )
 
     def _aggregate(
