@@ -387,6 +387,16 @@ def main():
         help="JSONL training triples used for exact-overlap exclusion.",
     )
     parser.add_argument(
+        "--verifier-train-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional verifier-train JSONL (claim/label/passages) to also "
+            "exclude from the dev eval. Recommended when --use-trained-verifier "
+            "is set so the verifier's training claims are not silently leaked."
+        ),
+    )
+    parser.add_argument(
         "--trace-errors-output",
         type=str,
         default=None,
@@ -541,6 +551,25 @@ def main():
         help="Optional verifier device override: cuda, cpu, or mps.",
     )
     parser.add_argument(
+        "--verifier-temperature",
+        type=float,
+        default=None,
+        help=(
+            "Override the verifier softmax temperature. If unset, the verifier "
+            "loads temperature.json from the model directory if present, else 1.0."
+        ),
+    )
+    parser.add_argument(
+        "--raw-predictions-output",
+        type=str,
+        default=None,
+        help=(
+            "Optional JSONL path. Per-claim raw records: gold label, baseline "
+            "synthesis verdict/confidence, calibrated verifier probabilities. "
+            "Use with tune_pipeline_thresholds.py to do held-out threshold tuning."
+        ),
+    )
+    parser.add_argument(
         "--verifier-min-confidence",
         type=float,
         default=None,
@@ -591,9 +620,13 @@ def main():
 
     exclude_claim_texts = None
     if args.exclude_train_overlap:
-        exclude_claim_texts = load_train_claim_texts(args.train_triples)
+        sources = [args.train_triples]
+        if args.verifier_train_file:
+            sources.append(args.verifier_train_file)
+        exclude_claim_texts = load_train_claim_texts(sources)
         logger.info(
-            f"Loaded {len(exclude_claim_texts)} training claims for decontamination"
+            f"Loaded {len(exclude_claim_texts)} training claims for "
+            f"decontamination from {len(sources)} source(s)"
         )
 
     claims, excluded_count = load_fever_dev_claims(
@@ -619,6 +652,10 @@ def main():
             args.verifier_model_path,
             device=args.verifier_device,
             max_length=args.verifier_max_length,
+            temperature=args.verifier_temperature,
+        )
+        logger.info(
+            "Verifier temperature in use: T = {:.4f}", verifier.temperature
         )
 
     y_true: list[str] = []
@@ -628,6 +665,7 @@ def main():
     hallucination_flags: list[bool] = []
     citation_missing_flags: list[bool] = []
     error_traces: list[dict] = []
+    raw_records: list[dict] = []
 
     chroma_index_dir = settings.get_absolute_path(settings.chroma_persist_dir)
 
@@ -647,6 +685,18 @@ def main():
                         retrievals,
                         max_passages=args.verifier_max_passages,
                     )
+                    if args.raw_predictions_output:
+                        raw_records.append({
+                            "claim_id": claim_data["id"],
+                            "gold_label": claim_data["label"],
+                            "baseline_verdict": baseline_result.verdict,
+                            "baseline_confidence": float(baseline_result.confidence),
+                            "verifier_probabilities": dict(prediction.probabilities),
+                            "verifier_label": prediction.label,
+                            "retrieved_passage_ids": [
+                                r.passage.id for r in retrievals
+                            ],
+                        })
                     prediction = calibrate_verifier_prediction(
                         prediction,
                         min_confidence=args.verifier_min_confidence,
@@ -809,6 +859,9 @@ def main():
         "exclude_train_overlap": args.exclude_train_overlap,
         "excluded_train_overlap_count": excluded_count,
         "train_triples": args.train_triples if args.exclude_train_overlap else None,
+        "verifier_train_file": (
+            args.verifier_train_file if args.exclude_train_overlap else None
+        ),
         "skip_decomposition": args.skip_decomposition,
         "enable_title_retrieval": args.enable_title_retrieval,
         "enable_reranker": args.enable_reranker,
@@ -900,6 +953,14 @@ def main():
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         trace_path.write_text(json.dumps(error_traces, indent=2), encoding="utf-8")
         logger.info(f"Wrong-prediction traces saved to {trace_path}")
+
+    if args.raw_predictions_output and raw_records:
+        raw_path = Path(args.raw_predictions_output)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        with raw_path.open("w", encoding="utf-8") as f:
+            for record in raw_records:
+                f.write(json.dumps(record) + "\n")
+        logger.info(f"Raw predictions saved to {raw_path} ({len(raw_records)} records)")
 
 
 if __name__ == "__main__":

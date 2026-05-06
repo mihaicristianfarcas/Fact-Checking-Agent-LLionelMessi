@@ -119,3 +119,75 @@ def test_baseline_refute_fallback_recovers_strong_refute_after_abstention():
 
     assert recovered.label == "REFUTED"
     assert recovered.confidence == 0.82
+
+
+def test_baseline_refute_fallback_keeps_probabilities_normalized():
+    """Probabilities dict must remain a valid distribution (sum ~= 1.0)."""
+    prediction = VerifierPrediction(
+        label="NOT_ENOUGH_INFO",
+        confidence=0.45,
+        probabilities={
+            "SUPPORTED": 0.20,
+            "REFUTED": 0.35,
+            "NOT_ENOUGH_INFO": 0.45,
+        },
+    )
+    baseline = SynthesisResult(
+        original_claim="Claim.",
+        verdict="REFUTED",
+        confidence=0.82,
+        explanation="Baseline refutes.",
+        cited_passage_ids=["p1"],
+        atomic_verdicts=[],
+        all_retrieved_ids=["p1"],
+    )
+
+    recovered = apply_baseline_refute_fallback(
+        prediction,
+        baseline,
+        min_baseline_confidence=0.75,
+        min_verifier_refute_probability=0.25,
+    )
+
+    total = sum(recovered.probabilities.values())
+    assert abs(total - 1.0) < 1e-6, f"probabilities sum to {total}, not 1.0"
+    assert recovered.probabilities["REFUTED"] == 0.82
+    # Relative ordering of other classes should be preserved.
+    assert (
+        recovered.probabilities["NOT_ENOUGH_INFO"]
+        > recovered.probabilities["SUPPORTED"]
+    )
+    assert all(0.0 <= p <= 1.0 for p in recovered.probabilities.values())
+
+
+def test_baseline_refute_fallback_handles_degenerate_remainder():
+    """When other classes sum to 0, fallback should put all mass on REFUTED."""
+    prediction = VerifierPrediction(
+        label="NOT_ENOUGH_INFO",
+        confidence=1.0,
+        probabilities={
+            "SUPPORTED": 0.0,
+            "REFUTED": 0.30,
+            "NOT_ENOUGH_INFO": 0.0,
+        },
+    )
+    baseline = SynthesisResult(
+        original_claim="Claim.",
+        verdict="REFUTED",
+        confidence=0.90,
+        explanation="Baseline refutes.",
+        cited_passage_ids=["p1"],
+        atomic_verdicts=[],
+        all_retrieved_ids=["p1"],
+    )
+
+    recovered = apply_baseline_refute_fallback(
+        prediction,
+        baseline,
+        min_baseline_confidence=0.75,
+        min_verifier_refute_probability=0.25,
+    )
+
+    total = sum(recovered.probabilities.values())
+    assert abs(total - 1.0) < 1e-6
+    assert recovered.probabilities["REFUTED"] == 1.0

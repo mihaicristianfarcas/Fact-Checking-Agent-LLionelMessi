@@ -29,20 +29,33 @@ def normalize_claim_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
-def load_train_claim_texts(path: str | Path) -> set[str]:
-    """Load normalized training claim texts from a JSONL triples file."""
-    train_path = Path(path)
-    if not train_path.exists():
-        raise FileNotFoundError(f"Training triples file not found: {train_path}")
+def load_train_claim_texts(
+    path: str | Path | Iterable[str | Path],
+) -> set[str]:
+    """Load normalized training claim texts from one or more JSONL files.
+
+    Accepts either ``claim_text`` (SFT triples) or ``claim`` (verifier-train
+    JSONL produced by build_fever_verifier_dataset.py). Pass a list of paths
+    to union exclusions across both training corpora.
+    """
+    if isinstance(path, (str, Path)):
+        paths: list[Path] = [Path(path)]
+    else:
+        paths = [Path(p) for p in path]
+
+    for p in paths:
+        if not p.exists():
+            raise FileNotFoundError(f"Training triples file not found: {p}")
 
     claims: set[str] = set()
-    for line in train_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        claim_text = row.get("claim_text")
-        if claim_text:
-            claims.add(normalize_claim_text(claim_text))
+    for p in paths:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            claim_text = row.get("claim_text") or row.get("claim")
+            if claim_text:
+                claims.add(normalize_claim_text(claim_text))
     return claims
 
 
