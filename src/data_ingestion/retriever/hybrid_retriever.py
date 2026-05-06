@@ -133,16 +133,22 @@ class HybridEvidenceRetriever:
         self,
         queries: list[str],
         top_k: int | None = None,
+        dataset_filter: str | None = None,
+        source_filter: str | None = None,
     ) -> list[list[RetrievalResult]]:
         """Retrieve for multiple claims.
 
         Dense-only mode delegates to the underlying batch API. Hybrid/reranked
         modes run sequentially so candidate traces stay simple and explicit.
         """
+        # Dense batch APIs in this codebase do not accept filters. If a caller
+        # asks for filtering, fall back to the per-query path so we honor it.
         if (
             self.enable_dense_retrieval
             and not self.enable_title_retrieval
             and not self.enable_reranker
+            and not dataset_filter
+            and not source_filter
             and self.dense_retriever is not None
             and hasattr(self.dense_retriever, "retrieve_batch")
         ):
@@ -155,14 +161,23 @@ class HybridEvidenceRetriever:
         dense_batches: list[list[RetrievalResult]] = [[] for _ in queries]
         if self.enable_dense_retrieval:
             dense_retriever = self._dense_retriever()
-            if hasattr(dense_retriever, "retrieve_batch"):
+            if (
+                hasattr(dense_retriever, "retrieve_batch")
+                and not dataset_filter
+                and not source_filter
+            ):
                 dense_batches = dense_retriever.retrieve_batch(
                     queries,
                     top_k=dense_top_k,
                 )
             else:
                 dense_batches = [
-                    dense_retriever.retrieve(query, top_k=dense_top_k)
+                    dense_retriever.retrieve(
+                        query,
+                        top_k=dense_top_k,
+                        dataset_filter=dataset_filter,
+                        source_filter=source_filter,
+                    )
                     for query in tqdm(queries, desc="Dense retrieval")
                 ]
 
@@ -176,11 +191,15 @@ class HybridEvidenceRetriever:
             candidates: list[RetrievalResult] = []
             if self.enable_dense_retrieval:
                 candidates.extend(_tag_results(dense_batches[idx], method="dense"))
-            if self.enable_title_retrieval:
+            if self.enable_title_retrieval and not source_filter:
                 title_results = self._title_retriever().retrieve(
                     query,
                     top_k=title_top_k,
                 )
+                if dataset_filter:
+                    title_results = [
+                        r for r in title_results if r.passage.dataset == dataset_filter
+                    ]
                 candidates.extend(_tag_results(title_results, method="title"))
 
             merged = annotate_source_relevance(

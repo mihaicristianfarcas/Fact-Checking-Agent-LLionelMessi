@@ -135,7 +135,7 @@ class CredibilityScorer:
 
     def _source_relevance_factor(self, ps: PassageStance) -> float:
         """Return a multiplier from retriever source relevance metadata."""
-        relevance = _metadata_float(ps.passage_metadata, "source_relevance", 1.0)
+        relevance = _metadata_float(ps.passage_metadata, "source_relevance", 0.5)
         relevance = max(0.0, min(1.0, relevance))
 
         # Contradictions from fuzzy title matches are the main observed error

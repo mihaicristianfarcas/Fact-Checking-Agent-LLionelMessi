@@ -438,7 +438,7 @@ class VerdictSynthesizer:
         )
 
     def _source_relevance(self, sp: ScoredPassage) -> float:
-        return _metadata_float(sp.stance.passage_metadata, "source_relevance", 1.0)
+        return _metadata_float(sp.stance.passage_metadata, "source_relevance", 0.5)
 
     def _collect_citations(self, atomic_verdicts: list[AtomicVerdict]) -> list[str]:
         """Deduplicated list of all cited passage IDs."""

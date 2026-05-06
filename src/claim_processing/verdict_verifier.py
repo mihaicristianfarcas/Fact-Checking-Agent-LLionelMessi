@@ -93,9 +93,12 @@ class FeverVerdictVerifier:
         *,
         device: str | None = None,
         max_length: int = 384,
+        temperature: float | None = None,
     ) -> None:
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        from src.model_training.calibration import load_temperature_sidecar
 
         if device is None:
             if torch.cuda.is_available():
@@ -118,6 +121,15 @@ class FeverVerdictVerifier:
             int(idx): _normalize_label(label) for idx, label in id2label.items()
         }
 
+        if temperature is None:
+            try:
+                sidecar = load_temperature_sidecar(model_path)
+            except Exception:
+                sidecar = None
+            self.temperature = sidecar if sidecar is not None else 1.0
+        else:
+            self.temperature = float(temperature)
+
     def predict_text(self, input_text: str) -> VerifierPrediction:
         """Predict a verdict from an already-formatted verifier input."""
         import torch
@@ -133,7 +145,8 @@ class FeverVerdictVerifier:
 
         with torch.no_grad():
             logits = self.model(**encoded).logits[0]
-            probs = torch.softmax(logits, dim=-1).detach().cpu().tolist()
+            scaled = logits / float(self.temperature)
+            probs = torch.softmax(scaled, dim=-1).detach().cpu().tolist()
 
         probabilities = {
             self.id2label.get(idx, ID_TO_LABEL[idx]): float(prob)
@@ -264,8 +277,23 @@ def apply_baseline_refute_fallback(
     if refute_prob < min_verifier_refute_probability:
         return prediction
 
-    probabilities = dict(prediction.probabilities)
-    probabilities["REFUTED"] = max(refute_prob, baseline_result.confidence)
+    new_refute = max(refute_prob, baseline_result.confidence)
+    new_refute = min(new_refute, 1.0)
+    other_total = sum(
+        p for label, p in prediction.probabilities.items() if label != "REFUTED"
+    )
+
+    probabilities: dict[str, float] = {}
+    if other_total > 0.0:
+        remaining_mass = max(0.0, 1.0 - new_refute)
+        for label, p in prediction.probabilities.items():
+            if label == "REFUTED":
+                probabilities[label] = new_refute
+            else:
+                probabilities[label] = p * remaining_mass / other_total
+    else:
+        for label in prediction.probabilities:
+            probabilities[label] = 1.0 if label == "REFUTED" else 0.0
     return VerifierPrediction(
         label="REFUTED",
         confidence=probabilities["REFUTED"],

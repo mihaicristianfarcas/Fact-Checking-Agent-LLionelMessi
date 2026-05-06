@@ -335,6 +335,54 @@ class TestStanceClassifier:
         assert result.refuting_count == 1
         assert result.supporting_count == 1
 
+    def test_truncation_warning_fires_once_when_pair_exceeds_max_length(self, caplog):
+        """Warn once when premise+hypothesis tokenization exceeds max_length."""
+        import logging
+
+        with patch("src.claim_processing.stance_classifier.AutoModelForSequenceClassification"), \
+             patch("src.claim_processing.stance_classifier.AutoTokenizer"):
+            classifier = StanceClassifier(device="cpu", max_length=64)
+
+        # Stub the tokenizer: any call without truncation returns 200 tokens,
+        # which exceeds max_length=64.
+        def fake_tokenize(*args, **kwargs):
+            if not kwargs.get("truncation", True):
+                return {"input_ids": [0] * 200}
+            raise AssertionError("only the untruncated path should be probed")
+
+        classifier._tokenizer = fake_tokenize  # type: ignore[assignment]
+
+        with caplog.at_level(logging.WARNING, logger="src.claim_processing.stance_classifier"):
+            classifier._maybe_warn_on_truncation(["a long premise"], ["a hypothesis"])
+            classifier._maybe_warn_on_truncation(["another premise"], ["another hyp"])
+
+        warning_records = [
+            r for r in caplog.records
+            if "truncating premise+hypothesis" in r.getMessage()
+        ]
+        assert len(warning_records) == 1, "warning should fire exactly once"
+        assert classifier._truncation_warned is True
+
+    def test_truncation_warning_silent_when_within_max_length(self, caplog):
+        """No warning when tokenized pair fits within max_length."""
+        import logging
+
+        with patch("src.claim_processing.stance_classifier.AutoModelForSequenceClassification"), \
+             patch("src.claim_processing.stance_classifier.AutoTokenizer"):
+            classifier = StanceClassifier(device="cpu", max_length=512)
+
+        def fake_tokenize(*args, **kwargs):
+            return {"input_ids": [0] * 100}
+
+        classifier._tokenizer = fake_tokenize  # type: ignore[assignment]
+
+        with caplog.at_level(logging.WARNING, logger="src.claim_processing.stance_classifier"):
+            classifier._maybe_warn_on_truncation(["short"], ["short"])
+
+        assert not any(
+            "truncating premise+hypothesis" in r.getMessage() for r in caplog.records
+        )
+
     @patch.object(StanceClassifier, "_batch_infer")
     def test_classify_strips_fever_tab_annotations(self, mock_batch_infer):
         """Passage text must be cleaned before inference — tabs stripped."""

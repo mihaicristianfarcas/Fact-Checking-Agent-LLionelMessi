@@ -49,6 +49,57 @@ The system operates as a tool-augmented LLM pipeline with five discrete tools:
 
 Bottom line: all four RFC tracks are implemented and testable. The current system is citation-safe on the measured eval, but verdict classification is still modest and biased toward `REFUTED`.
 
+## Methodology Fixes (post-`6ea95c4`)
+
+A code review surfaced eight issues in the trained-verifier integration; all
+are fixed in the current branch and covered by 21 new unit tests. The
+calibration/threshold-tuning work needs to be re-run on the CUDA box before
+publishing updated headline numbers — the existing 0.704 figure should be
+treated as preliminary until then.
+
+| # | Issue | Fix | Where |
+|---|-------|-----|-------|
+| 1 | Verifier ensemble thresholds tuned on the same 500 claims reported on | New script `src/scripts/tune_pipeline_thresholds.py` does deterministic 50/50 split, sweeps thresholds on tune half, reports holdout half | `src/scripts/tune_pipeline_thresholds.py`, `--raw-predictions-output` flag in `evaluate_pipeline.py` |
+| 2 | `apply_baseline_refute_fallback` mutated `REFUTED` prob without renormalizing — dict could sum to >1.0 | Renormalize remaining classes proportionally; degenerate case puts all mass on REFUTED | `src/claim_processing/verdict_verifier.py` |
+| 3 | `--exclude-train-overlap` only checked SFT triples (`claim_text` key, ~126k); verifier-train uses `claim` key (~145k) | `load_train_claim_texts` accepts both keys and a list of paths; new `--verifier-train-file` flag | `src/evaluation/fever_utils.py`, `src/scripts/evaluate_pipeline.py` |
+| 4 | `source_relevance` defaulted to 1.0 (max trust) when metadata absent — silently neutralized weak-source guard on non-FEVER data | Default to 0.5 (neutral) in synthesizer + scorer | `src/synthesis/verdict_synthesizer.py`, `src/scoring/credibility_scorer.py` |
+| 5 | No probability calibration; ECE worsened 0.130 → 0.185 with verifier | Temperature scaling: new `calibration.py` fits scalar T on dev split, `FeverVerdictVerifier` loads `temperature.json` sidecar automatically | `src/model_training/calibration.py`, `src/scripts/calibrate_verifier.py`, `--verifier-temperature` flag |
+| 6 | Stance classifier silently truncated when `--include-source-title-in-stance` pushed input past `max_length` | One-shot warning the first time truncation would occur | `src/claim_processing/stance_classifier.py` |
+| 7 | `HybridEvidenceRetriever.retrieve_batch` ignored `dataset_filter` / `source_filter` — diverged from single-call path | Filters now plumbed through batch path; falls back to per-query when dense batch API doesn't support filters | `src/data_ingestion/retriever/hybrid_retriever.py` |
+| 8 | Verifier override path, NEI branch, and degenerate edge cases lacked test coverage | 21 new tests across 4 new test files (`test_calibration.py`, `test_fever_utils.py`, `test_tune_pipeline_thresholds.py`) plus extensions to existing files | `tests/` |
+
+### Re-running the corrected pipeline
+
+```bash
+# 1. Fit verifier temperature on the existing dev split (writes temperature.json)
+python -m src.scripts.calibrate_verifier \
+  --model-path models/fever_verifier_deberta_base_20k_fast \
+  --dev-file data/processed/fever_verifier_dev_2k_fast.jsonl
+
+# 2. Run eval to collect raw per-claim records (no thresholds applied yet).
+#    Add --verifier-train-file so verifier-train claims are also excluded.
+python -m src.scripts.evaluate_pipeline \
+  --max-claims 500 --top-k 5 \
+  --exclude-train-overlap \
+  --verifier-train-file data/processed/fever_verifier_train_20k_fast.jsonl \
+  --skip-decomposition --enable-title-retrieval --enable-reranker \
+  --candidate-k 50 --title-index-path data/index/fever_titles.sqlite \
+  --include-source-title-in-stance --combine-same-source-evidence \
+  --use-trained-verifier \
+  --verifier-model-path models/fever_verifier_deberta_base_20k_fast \
+  --verifier-max-passages 3 \
+  --raw-predictions-output data/processed/raw_predictions_500.jsonl \
+  --output data/processed/pipeline_eval_500_raw.json
+
+# 3. Tune thresholds on a held-out half, report on the other half.
+python -m src.scripts.tune_pipeline_thresholds \
+  --raw-predictions data/processed/raw_predictions_500.jsonl \
+  --output data/processed/tuned_thresholds.json
+```
+
+The holdout macro-F1 from step 3 is the headline number to publish; the
+previously reported 0.704 / 0.701 used thresholds fit on the same 500 claims.
+
 ## Latest Results
 
 ### Trained FEVER Verifier Result (Best Pipeline)

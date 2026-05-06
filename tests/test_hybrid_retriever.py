@@ -124,3 +124,35 @@ def test_hybrid_retriever_scores_source_relevance_for_title_quality():
 
     assert relevance["exact"] > relevance["fuzzy"]
     assert relevance["fuzzy"] < 0.55
+
+
+def test_retrieve_batch_applies_dataset_filter_to_title_results():
+    """Batch path must apply dataset_filter to title results, matching the
+    single-call retrieve() path. Otherwise non-FEVER passages leak in."""
+    politifact_passage = RetrievalResult(
+        passage=EvidencePassage(
+            id="politifact-1",
+            text="Politifact passage.",
+            source="politifact",
+            dataset="politifact",
+        ),
+        score=0.9,
+        rank=1,
+    )
+    fever_passage = _result("fever-1", 0.8, 1, method="title")
+
+    title = FakeTitleRetriever([politifact_passage, fever_passage])
+    retriever = HybridEvidenceRetriever(
+        dense_retriever=FakeDenseRetriever([]),
+        title_retriever=title,
+        enable_dense_retrieval=False,
+        enable_title_retrieval=True,
+        enable_reranker=False,
+        candidate_k=5,
+    )
+
+    batch = retriever.retrieve_batch(["claim 1"], top_k=5, dataset_filter="fever")
+    ids = [r.passage.id for r in batch[0]]
+
+    assert "politifact-1" not in ids
+    assert "fever-1" in ids

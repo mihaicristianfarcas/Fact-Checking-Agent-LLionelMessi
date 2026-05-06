@@ -121,6 +121,26 @@ class TestCredibilityScorer:
         assert len(batch) == 3
         assert all(len(b) == 1 for b in batch)
 
+    def test_missing_source_relevance_defaults_to_neutral(self):
+        """Passages without source_relevance metadata must not be treated as
+        fully trusted (1.0). A neutral default (0.5) prevents silent bypass of
+        the fuzzy-title-refute guard on non-FEVER data.
+        """
+        no_metadata_refute = _make_passage_stance(
+            passage_id="no-meta",
+            stance=StanceLabel.REFUTING,
+            metadata={},
+        )
+        full_trust_refute = _make_passage_stance(
+            passage_id="full-trust",
+            stance=StanceLabel.REFUTING,
+            metadata={"source_relevance": 1.0},
+        )
+        sr = _make_stance_result([no_metadata_refute, full_trust_refute])
+        scored = CredibilityScorer().score(sr)
+
+        assert scored[0].credibility < scored[1].credibility
+
     def test_source_relevance_penalizes_weak_refutations(self):
         weak_refute = _make_passage_stance(
             passage_id="weak-refute",

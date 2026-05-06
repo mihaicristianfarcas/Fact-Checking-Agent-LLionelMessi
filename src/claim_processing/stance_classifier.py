@@ -302,6 +302,7 @@ class StanceClassifier:
         self.confidence_threshold = confidence_threshold
         self.max_length = max_length
         self.include_source_title_in_premise = include_source_title_in_premise
+        self._truncation_warned = False
 
         # Device selection
         if device is not None:
@@ -447,6 +448,8 @@ class StanceClassifier:
             premises = [p for p, _ in batch]
             hypotheses = [h for _, h in batch]
 
+            self._maybe_warn_on_truncation(premises, hypotheses)
+
             encoding = self._tokenizer(
                 premises,
                 hypotheses,
@@ -469,6 +472,39 @@ class StanceClassifier:
                 all_probs.append(prob_dict)
 
         return all_probs
+
+    def _maybe_warn_on_truncation(
+        self,
+        premises: list[str],
+        hypotheses: list[str],
+    ) -> None:
+        """Warn once when a premise+hypothesis pair would be truncated.
+
+        With include_source_title_in_premise=True the prepended title can push
+        the tokenized sequence past max_length and silently lop off the end of
+        the passage — exactly where the predicate often lives.
+        """
+        if self._truncation_warned:
+            return
+        for premise, hypothesis in zip(premises, hypotheses):
+            untruncated = self._tokenizer(
+                premise,
+                hypothesis,
+                truncation=False,
+                padding=False,
+            )["input_ids"]
+            if len(untruncated) > self.max_length:
+                logger.warning(
+                    "StanceClassifier truncating premise+hypothesis pair from "
+                    "%d to %d tokens. With include_source_title_in_premise=%s, "
+                    "this can drop the passage's predicate. Consider raising "
+                    "max_length or shortening source titles.",
+                    len(untruncated),
+                    self.max_length,
+                    self.include_source_title_in_premise,
+                )
+                self._truncation_warned = True
+                return
 
     def _premise_text(self, retrieval: "_RetrievalResultProtocol") -> str:
         """Return the text sent to the NLI model for one retrieved passage."""
