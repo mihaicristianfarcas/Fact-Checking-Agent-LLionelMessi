@@ -711,6 +711,29 @@ python -m src.scripts.build_index --political-filter --clear
 python -m src.scripts.validate_corpus --sample-queries 20
 ```
 
+### Interactive Chat (streamed answers)
+
+Instead of returning a bare `SUPPORTED / REFUTED / NOT_ENOUGH_INFO` tag, the
+agent can stream a conversational reply that explains the verdict and
+references the retrieved evidence.
+
+```bash
+# Start an interactive REPL. The verification pipeline is unchanged; a small
+# local chat model only narrates the structured result.
+python -m src.scripts.chat
+
+# Use a different responder model (any HF instruction-tuned chat model works):
+python -m src.scripts.chat --responder-model Qwen/Qwen2.5-3B-Instruct
+
+# Hide the verdict/confidence header above each reply:
+python -m src.scripts.chat --no-trace
+```
+
+The default responder is `Qwen/Qwen2.5-1.5B-Instruct` (~3 GB on first run,
+cached afterwards). The single-shot demo is still available via
+`python -m src.scripts.run_demo --claim "..."` when you only need the
+structured `SynthesisResult`.
+
 ### Using the Evidence Retriever (Person B interface)
 
 ```python
