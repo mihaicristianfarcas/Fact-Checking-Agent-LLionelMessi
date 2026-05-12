@@ -12,9 +12,9 @@ export function JourneyLine({
 	height?: number;
 }) {
 	const w = 880;
-	const padX = 56;
-	const padTop = 28;
-	const padBottom = 60;
+	const padX = 110;
+	const padTop = 22;
+	const padBottom = 46;
 	const innerW = w - padX * 2;
 	const innerH = height - padTop - padBottom;
 	const [yMin, yMax] = yDomain;
@@ -74,7 +74,7 @@ export function JourneyLine({
 					</motion.text>
 					<motion.text
 						x={xs[i]}
-						y={padTop + innerH + 18}
+						y={padTop + innerH + 14}
 						textAnchor="middle"
 						className="mono"
 						style={{ fontSize: 10, fill: '#0b2447', fontWeight: 600, letterSpacing: '0.04em' }}
@@ -87,7 +87,7 @@ export function JourneyLine({
 					{p.sub && (
 						<motion.text
 							x={xs[i]}
-							y={padTop + innerH + 32}
+							y={padTop + innerH + 28}
 							textAnchor="middle"
 							className="mono"
 							style={{ fontSize: 9, fill: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em' }}

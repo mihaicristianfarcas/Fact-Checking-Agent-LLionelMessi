@@ -7,7 +7,7 @@ const SIZE_CLASSES: Record<Size, string> = {
 	md: 'text-4xl',
 	lg: 'text-5xl',
 	xl: 'text-7xl',
-	hero: 'text-[10rem] leading-none',
+	hero: 'text-[6.5rem] leading-none',
 };
 
 export function MonoNumber({

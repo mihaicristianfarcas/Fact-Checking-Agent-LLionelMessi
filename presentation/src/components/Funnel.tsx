@@ -22,11 +22,12 @@ export function Funnel({ stages }: { stages: Stage[] }) {
 				return (
 					<div key={s.label} className="w-full flex flex-col items-center">
 						<motion.div
-							initial={{ opacity: 0, y: -10, width: '40%' }}
-							animate={{ opacity: 1, y: 0, width: `${s.width}%` }}
-							transition={{ delay: 0.15 + i * 0.18, duration: 0.45, ease: 'easeOut' }}
+							initial={{ opacity: 0, y: -8 }}
+							animate={{ opacity: 1, y: 0 }}
+							transition={{ delay: 0.15 + i * 0.18, duration: 0.4, ease: 'easeOut' }}
 							className="flex items-center justify-between px-6 py-3"
 							style={{
+								width: `${s.width}%`,
 								background: toneStyles.background,
 								border: `1px solid ${toneStyles.borderColor}`,
 								borderRadius: 2,

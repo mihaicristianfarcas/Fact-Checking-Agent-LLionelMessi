@@ -516,7 +516,7 @@ const Result = () => (
 							{ value: 0.704, label: '+ trained verifier', sub: 'calibrated' },
 						]}
 						yDomain={[0.3, 0.75]}
-						height={170}
+						height={130}
 					/>
 				</div>
 			</div>
