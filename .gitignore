@@ -76,3 +76,5 @@ logs/
 tmp/
 temp/
 copilot-session-*.md
+
+presentation/node_modules/
