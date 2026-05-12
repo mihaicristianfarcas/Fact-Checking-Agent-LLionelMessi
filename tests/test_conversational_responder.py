@@ -159,16 +159,19 @@ def test_build_messages_handles_empty_evidence():
 def test_system_prompt_constrains_grounding():
     """System prompt must instruct against fabrication, forbid using
     pretraining knowledge, require verbatim quoting of evidence snippets,
-    and call out NOT_ENOUGH_INFO handling. These are the load-bearing
-    constraints for grounding — loosening any of them lets the small chat
-    model drift."""
+    and address negated claims so the model doesn't open a REFUTED reply
+    with 'Yes'. These are the load-bearing constraints for grounding —
+    loosening any of them lets the small chat model drift. NOT_ENOUGH_INFO
+    is handled by a deterministic template, so the prompt no longer needs
+    to cover it."""
     lower = SYSTEM_PROMPT.lower()
     assert "do not invent" in lower
     assert "only" in lower and "evidence" in lower
     assert "pretraining" in lower or "outside knowledge" in lower
     assert "verbatim" in lower
     assert "evidence:" in lower
-    assert "NOT_ENOUGH_INFO" in SYSTEM_PROMPT
+    assert "REFUTED" in SYSTEM_PROMPT and "SUPPORTED" in SYSTEM_PROMPT
+    assert "negation" in lower or "not start" in lower
 
 
 def test_user_prompt_requests_verbatim_quotes():

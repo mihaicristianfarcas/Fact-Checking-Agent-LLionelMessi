@@ -16,7 +16,44 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
+import warnings
+
+
+def _silence_noise() -> None:
+    """Mute every non-conversational output stream before heavy imports.
+
+    The REPL surface only displays the verdict line and the model's reply.
+    Library log lines, deprecation warnings, and tqdm bars destroy that.
+    Done before importing torch/transformers so their module-level loggers
+    pick up the level we set here.
+    """
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    os.environ.setdefault("PYTHONWARNINGS", "ignore")
+
+    warnings.filterwarnings("ignore")
+    logging.basicConfig(level=logging.ERROR, force=True)
+    logging.getLogger().setLevel(logging.ERROR)
+    for name in (
+        "transformers",
+        "sentence_transformers",
+        "datasets",
+        "huggingface_hub",
+        "urllib3",
+        "filelock",
+        "torch",
+        "src",
+    ):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+
+_silence_noise()
 
 from rich.console import Console
 from rich.panel import Panel
@@ -27,7 +64,15 @@ from src.synthesis.conversational_responder import (
     ConversationalResponder,
 )
 
-console = Console()
+try:
+    from transformers.utils import logging as hf_logging
+
+    hf_logging.set_verbosity_error()
+    hf_logging.disable_progress_bar()
+except Exception:
+    pass
+
+console = Console(stderr=False)
 
 DEFAULT_VERIFIER_MODEL = "vasiledraguta/deberta-v3-base-fever-verifier-20k-finetuned"
 

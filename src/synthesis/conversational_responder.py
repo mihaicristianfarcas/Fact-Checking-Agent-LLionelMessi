@@ -42,20 +42,30 @@ SYSTEM_PROMPT = (
     "provided evidence.\n"
     "- If a detail you would naturally want to mention is not in the "
     "evidence, omit it. Better to be brief than to drift.\n"
-    "- If the verdict is NOT_ENOUGH_INFO, say honestly that the corpus "
-    "does not contain sufficient evidence to verify the claim. Do not "
-    "speculate, do not fall back on memory, do not hedge with outside "
-    "facts.\n"
     "- If the evidence section is empty, say so plainly and stop.\n"
     "- The pipeline's verdict reflects its own statistical signal, not "
     "necessarily what the quoted snippets say. If the snippets do not "
     "actually justify the verdict, say so plainly rather than inventing "
     "a justification.\n\n"
+    "Addressing the claim as written (CRITICAL — read carefully):\n"
+    "- Judge the user's claim as it is written, including any negation. "
+    "A claim like \"X is not Y\" is the OPPOSITE of \"X is Y\"; do not "
+    "conflate them.\n"
+    "- If the pipeline verdict is SUPPORTED, the claim itself is true. "
+    "Confirm it. Do not start your reply with \"No\".\n"
+    "- If the pipeline verdict is REFUTED, the claim itself is false. "
+    "Tell the user the claim is incorrect and state what the evidence "
+    "actually shows. Do NOT start your reply with \"Yes\" — that reads "
+    "as agreement with a false claim. Open with phrasing like \"No,\", "
+    "\"Actually,\", or \"That's not correct —\".\n"
+    "- Never write a sentence of the form \"Yes, <restatement that "
+    "contradicts the user's claim>\". The opening word must match the "
+    "truth value of the user's claim as written.\n\n"
     "Required output format (always, in this exact order):\n"
     "1. A 1-2 sentence conversational verdict in plain language. State "
-    "whether the claim is supported, refuted, or unverifiable, and name "
-    "the source(s) you are relying on (e.g. the Wikipedia article title "
-    "shown in parentheses before each evidence line).\n"
+    "whether the claim is supported or refuted, and name the source(s) "
+    "you are relying on (e.g. the Wikipedia article title shown in "
+    "parentheses before each evidence line).\n"
     "2. A blank line, then the line `Evidence:`.\n"
     "3. Between 1 and 3 bullet lines, each in the form:\n"
     "       - (Source name) \"verbatim quote from the provided evidence\"\n"
@@ -67,7 +77,7 @@ SYSTEM_PROMPT = (
     "Tone: friendly and conversational, never clinical. Match the user's "
     "language. Do not output JSON, XML, headings, or labels other than "
     "the literal `Evidence:` line described above.\n\n"
-    "Worked example (follow this format exactly):\n"
+    "Worked example A — SUPPORTED claim (follow this format exactly):\n"
     "----\n"
     "User's claim: \"Lionel Messi plays for FC Barcelona.\"\n"
     "Pipeline verdict: SUPPORTED (high-confidence; supported by the "
@@ -83,6 +93,21 @@ SYSTEM_PROMPT = (
     "- (Lionel_Messi) \"Lionel Messi is an Argentine professional "
     "footballer who plays as a forward for the Spanish club FC "
     "Barcelona.\"\n"
+    "----\n\n"
+    "Worked example B — REFUTED claim with a negation (note the opener):\n"
+    "----\n"
+    "User's claim: \"Lionel Messi is not from Argentina.\"\n"
+    "Pipeline verdict: REFUTED (high-confidence; contradicted by the "
+    "evidence).\n"
+    "Evidence retrieved from the corpus:\n"
+    "- (Lionel_Messi) \"Lionel Messi is an Argentine professional "
+    "footballer.\"\n\n"
+    "Your reply:\n"
+    "No, that claim is incorrect — according to the Wikipedia article "
+    "on Lionel Messi, he is Argentine.\n\n"
+    "Evidence:\n"
+    "- (Lionel_Messi) \"Lionel Messi is an Argentine professional "
+    "footballer.\"\n"
     "----"
 )
 
@@ -101,9 +126,23 @@ def _stream_insufficient_evidence_template(
         "I couldn't find any usable evidence in the corpus that directly "
         f"addresses this claim, so I can't verify it. The pipeline reported "
         f"`{pipeline_verdict}`, but with no quotable supporting passages I "
-        "would treat that label as unreliable for this question.\n\n"
-        "Evidence:\n"
-        "(no usable evidence was retrieved from the corpus for this claim)"
+        "would treat that label as unreliable for this question."
+    )
+    for line in body.splitlines(keepends=True):
+        yield line
+
+
+def _stream_not_enough_info_template(claim: str) -> Iterator[str]:
+    """Deterministic reply for a NOT_ENOUGH_INFO verdict.
+
+    By definition the corpus does not contain enough evidence to decide the
+    claim, so we do not surface any retrieved snippets — they would either
+    mislead the user or invite the chat model to fabricate justification
+    around them.
+    """
+    body = (
+        "I don't have enough evidence in the corpus to verify or refute "
+        "this claim, so I'll have to leave it as unverified."
     )
     for line in body.splitlines(keepends=True):
         yield line
@@ -190,12 +229,18 @@ def select_evidence_snippets(
     *,
     max_snippets: int = 4,
     max_chars_per_snippet: int = 350,
+    drop_low_quality: bool = True,
 ) -> list[EvidenceSnippet]:
     """Pick the top retrieved passages across atomic claims, deduped by id.
 
     Preference order: (1) passages cited by the synthesis result, (2) the
     highest-scoring retrieved passages. Truncates each snippet to keep the
     prompt small enough for a 1-2B model context window.
+
+    ``drop_low_quality`` filters FEVER-infobox-style garbage by default.
+    Callers can disable it as a fallback when the strict pass leaves the
+    responder with nothing to ground on for a verdict the pipeline is
+    otherwise confident about.
     """
     cited_ids = list(trace.synthesis.cited_passage_ids) if trace.synthesis else []
     cited_set = set(cited_ids)
@@ -223,11 +268,13 @@ def select_evidence_snippets(
         if len(snippets) >= max_snippets:
             break
         text = r.passage.text.strip()
-        if is_low_quality_passage(text):
+        if drop_low_quality and is_low_quality_passage(text):
             logger.debug(
                 "Dropping low-quality passage %s from responder prompt.",
                 r.passage.id,
             )
+            continue
+        if not text:
             continue
         if len(text) > max_chars_per_snippet:
             text = text[: max_chars_per_snippet - 3].rstrip() + "..."
@@ -336,7 +383,17 @@ class ConversationalResponder:
         if trace.synthesis is None:
             raise ValueError("trace.synthesis must be populated before streaming.")
 
+        if trace.synthesis.verdict == "NOT_ENOUGH_INFO":
+            yield from _stream_not_enough_info_template(trace.original_claim)
+            return
+
         snippets = select_evidence_snippets(trace)
+        if not snippets:
+            # Strict quality filter rejected everything. Rather than surface
+            # an "I can't verify it" template that contradicts a confident
+            # SUPPORTED/REFUTED verdict, retry without the filter so the
+            # model still has something concrete to ground on.
+            snippets = select_evidence_snippets(trace, drop_low_quality=False)
 
         if not snippets:
             yield from _stream_insufficient_evidence_template(
