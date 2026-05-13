@@ -11,11 +11,11 @@ import { Funnel } from './components/Funnel';
 import { StatCard } from './components/StatCard';
 import { PipelineDiagram } from './components/PipelineDiagram';
 import { ProblemSchematic } from './components/ProblemSchematic';
-import { DecomposerTree } from './components/DecomposerTree';
-import { NliSchematic } from './components/NliSchematic';
+import { ClaimProcessingDiagram } from './components/ClaimProcessingDiagram';
 import { TrainingPipeline } from './components/TrainingPipeline';
 import { OrchestratorDiagram } from './components/OrchestratorDiagram';
 import { VerdictComparisonCard } from './components/VerdictComparisonCard';
+import { StateOfTheArt } from './components/StateOfTheArt';
 
 export type SlideDef = {
 	id: string;
@@ -102,14 +102,30 @@ const Problem = () => (
 	</SlideShell>
 );
 
-/* ─────────── 03 Architecture ─────────── */
-const Architecture = () => (
+/* ─────────── 03 State of the art ─────────── */
+const SOTA = () => (
 	<SlideShell>
 		<SlideHeader
 			section="INTRO"
 			figureId="03"
+			figureTitle="STATE OF THE ART"
+			kicker="related work"
+			heading="Existing systems either hallucinate citations or skip calibration."
+		/>
+		<div className="flex-1 flex items-center justify-center pt-2">
+			<StateOfTheArt />
+		</div>
+	</SlideShell>
+);
+
+/* ─────────── 04 Architecture ─────────── */
+const Architecture = () => (
+	<SlideShell>
+		<SlideHeader
+			section="INTRO"
+			figureId="04"
 			figureTitle="AGENT PIPELINE"
-			kicker="system overview"
+			kicker="proposed solution"
 			heading="Five tools. One orchestrator. Full audit trail."
 		/>
 		<div className="flex-1 flex flex-col items-center justify-center gap-6 pt-2">
@@ -123,12 +139,12 @@ const Architecture = () => (
 	</SlideShell>
 );
 
-/* ─────────── 04 Corpus & filter ─────────── */
+/* ─────────── 05 Corpus & filter ─────────── */
 const Corpus = () => (
 	<SlideShell>
 		<SlideHeader
 			section="A"
-			figureId="04"
+			figureId="05"
 			figureTitle="CORPUS COMPOSITION"
 			kicker="data & ingestion"
 			heading="Filtering 5.4M wiki pages down to a political-claim corpus."
@@ -175,12 +191,12 @@ const Corpus = () => (
 	</SlideShell>
 );
 
-/* ─────────── 05 Retrieval breakthrough ─────────── */
+/* ─────────── 06 Retrieval breakthrough ─────────── */
 const Retrieval = () => (
 	<SlideShell>
 		<SlideHeader
 			section="A"
-			figureId="05"
+			figureId="06"
 			figureTitle="RETRIEVAL RECALL"
 			kicker="data & ingestion"
 			heading="Dense embeddings alone weren't enough."
@@ -234,38 +250,18 @@ const Retrieval = () => (
 	</SlideShell>
 );
 
-/* ─────────── 06 Decomposer ─────────── */
-const Decomposer = () => (
-	<SlideShell>
-		<SlideHeader
-			section="B"
-			figureId="06"
-			figureTitle="CLAIM DECOMPOSITION"
-			kicker="claim processing"
-			heading="Split compound claims into atomically verifiable pieces."
-		/>
-		<div className="flex-1 flex items-center justify-center pt-2">
-			<DecomposerTree />
-		</div>
-	</SlideShell>
-);
-
-/* ─────────── 07 Stance classifier ─────────── */
-const Stance = () => (
+/* ─────────── 07 Claim processing (decompose + stance) ─────────── */
+const ClaimProcessing = () => (
 	<SlideShell>
 		<SlideHeader
 			section="B"
 			figureId="07"
-			figureTitle="STANCE CLASSIFIER · NLI"
-			kicker="claim processing"
-			heading="Per-passage stance: supports, refutes, or neutral."
+			figureTitle="CLAIM PROCESSING"
+			kicker="decompose · then stance"
+			heading="Split compound claims, then label each (claim, passage) pair."
 		/>
-		<div className="flex-1 flex flex-col items-center justify-center gap-6 pt-2">
-			<NliSchematic />
-			<p className="mono text-[11px] text-[#64748b] uppercase tracking-[0.14em] max-w-4xl text-center">
-				every classification carries the original passage id · citations cannot reference anything
-				outside the retrieved set · this is what enforces 0.0% hallucinated citations
-			</p>
+		<div className="flex-1 flex items-center justify-center pt-2">
+			<ClaimProcessingDiagram />
 		</div>
 	</SlideShell>
 );
@@ -666,11 +662,11 @@ const Close = () => (
 export const SLIDES: SlideDef[] = [
 	{ id: 'title', name: 'Title', render: Title },
 	{ id: 'problem', name: 'The Problem', render: Problem },
+	{ id: 'sota', name: 'State of the Art', render: SOTA },
 	{ id: 'architecture', name: 'Architecture', render: Architecture },
 	{ id: 'corpus', name: 'A · Corpus & Filter', render: Corpus },
 	{ id: 'retrieval', name: 'A · Retrieval', render: Retrieval },
-	{ id: 'decomposer', name: 'B · Claim Decomposer', render: Decomposer },
-	{ id: 'stance', name: 'B · Stance Classifier', render: Stance },
+	{ id: 'claim-processing', name: 'B · Claim Processing', render: ClaimProcessing },
 	{ id: 'training', name: 'C · SFT + DPO', render: Training },
 	{ id: 'lessons', name: 'C · Verdict-Head Eval', render: Lessons },
 	{ id: 'synthesis', name: 'D · Synthesis & Orchestrator', render: Synthesis },
