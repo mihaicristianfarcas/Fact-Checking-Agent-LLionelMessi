@@ -37,6 +37,7 @@ from src.data_ingestion.retriever.evidence_retriever import (
 )
 from src.scoring.credibility_scorer import CredibilityScorer
 from src.synthesis.verdict_synthesizer import SynthesisResult, VerdictSynthesizer
+from src.utils.coerce import as_float
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ class FactCheckAgent:
         trace.decomposition = decomposition
         trace.steps_executed.append("decompose")
         atomic_texts = decomposition.texts
-        logger.info(
+        logger.debug(
             "Decomposed into %d atomic claim(s).", len(atomic_texts)
         )
 
@@ -194,7 +195,7 @@ class FactCheckAgent:
                 and results
                 and results[0].score < self.low_score_threshold
             ):
-                logger.info(
+                logger.debug(
                     "Adaptive: low top score (%.3f) for %r, doubling top_k.",
                     results[0].score,
                     ac_text[:60],
@@ -234,7 +235,7 @@ class FactCheckAgent:
         trace.steps_executed.append("synthesize")
 
         trace.total_latency_ms = (time.perf_counter() - start) * 1000
-        logger.info(
+        logger.debug(
             "Pipeline complete: %s (conf=%.3f) in %.0f ms",
             synthesis.verdict,
             synthesis.confidence,
@@ -339,13 +340,13 @@ def _merge_group_metadata(group: list[RetrievalResult]) -> dict:
                 metadata[key] = value
         if "source_relevance" in item_meta:
             metadata["source_relevance"] = max(
-                _as_float(metadata.get("source_relevance"), 0.0),
-                _as_float(item_meta.get("source_relevance"), 0.0),
+                as_float(metadata.get("source_relevance"), 0.0),
+                as_float(item_meta.get("source_relevance"), 0.0),
             )
         if "rerank_score" in item_meta:
             metadata["rerank_score"] = max(
-                _as_float(metadata.get("rerank_score"), 0.0),
-                _as_float(item_meta.get("rerank_score"), 0.0),
+                as_float(metadata.get("rerank_score"), 0.0),
+                as_float(item_meta.get("rerank_score"), 0.0),
             )
     if retrieval_methods:
         metadata["retrieval_methods"] = sorted(retrieval_methods)
@@ -360,8 +361,3 @@ def _as_list(value) -> list[str]:
     return [str(value)]
 
 
-def _as_float(value, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default

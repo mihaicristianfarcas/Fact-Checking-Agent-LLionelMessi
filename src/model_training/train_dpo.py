@@ -26,16 +26,10 @@ def main(args):
     adapter_dir = "./models/fact_checker_sft"
     logger.info(f"Using base model: {model_id} and SFT adapter from {adapter_dir}")
 
-    # Check hardware — CUDA > MPS (Apple Silicon) > CPU
-    has_cuda = torch.cuda.is_available()
-    has_mps = torch.backends.mps.is_available()
-    if has_cuda:
-        device = "cuda"
-    elif has_mps:
-        device = "mps"
-    else:
-        device = "cpu"
-    logger.info(f"Hardware detection: CUDA={has_cuda}, MPS={has_mps} → using {device.upper()}")
+    from src.utils.device import pick_device
+
+    device = pick_device()
+    logger.info(f"Using device: {device.upper()}")
 
     if not os.path.exists(adapter_dir):
         logger.warning(f"SFT adapter not found at {adapter_dir}. DPO should ideally be run AFTER SFT.")

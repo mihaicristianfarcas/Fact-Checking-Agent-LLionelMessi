@@ -396,7 +396,7 @@ Both fine-tuned models are published on Hugging Face:
 
 ### 8.4 Repository
 
-`github.com/.../Fact-Checking-Agent-LLionelMessi` (private during course; public on request).
+`github.com/mihaicristianfarcas/Fact-Checking-Agent-LLionelMessi` (private during course; public on request).
 
 ---
 
@@ -408,7 +408,7 @@ Both fine-tuned models are published on Hugging Face:
 | Claim processing · decomposer · stance NLI · Ollama integration | David | decomposer (LLM + rule-based fallback), DeBERTa-NLI stance classifier |
 | Generative verdict head · SFT + DPO training · TinyLlama LoRA adapter · abstention guardrail | Andrei | training notebooks, Hugging Face adapter, evaluation harness |
 | Orchestrator · synthesis · credibility scorer · DeBERTa verifier (training, calibration, integration) · end-to-end eval | Vasile | orchestrator state machine, synthesiser, DeBERTa verifier on HF, calibration pipeline, decontamination & evaluation tooling |
-| Presentation deck · documentation | Mihai (with Vasile) | this document, `presentation/` React deck |
+| Presentation deck · documentation | Mihai | this document |
 
 ---
 

@@ -46,6 +46,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from src.claim_processing.text_cleaner import clean_passages_in_retrieval_results
 from src.config.settings import settings
+from src.utils.text import display_fever_source
 
 logger = logging.getLogger(__name__)
 
@@ -304,15 +305,9 @@ class StanceClassifier:
         self.include_source_title_in_premise = include_source_title_in_premise
         self._truncation_warned = False
 
-        # Device selection
-        if device is not None:
-            self.device = device
-        elif torch.cuda.is_available():
-            self.device = "cuda"
-        elif torch.backends.mps.is_available():
-            self.device = "mps"
-        else:
-            self.device = "cpu"
+        from src.utils.device import pick_device
+
+        self.device = device if device is not None else pick_device()
 
         logger.info(
             "StanceClassifier: loading %s on %s …", self.model_name, self.device
@@ -400,7 +395,7 @@ class StanceClassifier:
             model_name=self.model_name,
         )
 
-        logger.info(
+        logger.debug(
             "Claim %r — %d passages: %d supporting, %d refuting, %d neutral "
             "(aggregate=%s, score=%.3f, %.0f ms)",
             claim[:60],
@@ -515,14 +510,7 @@ class StanceClassifier:
         source = getattr(retrieval.passage, "source", "") or ""
         if not source:
             return text
-        source = (
-            source.replace("_", " ")
-            .replace("-LRB-", "(")
-            .replace("-RRB-", ")")
-            .replace("-LSB-", "[")
-            .replace("-RSB-", "]")
-        )
-        return f"{source}. {text}"
+        return f"{display_fever_source(source)}. {text}"
 
     def _build_passage_stance(
         self,

@@ -8,9 +8,7 @@ We map these to the three-class schema: SUPPORTED, REFUTED, NOT_ENOUGH_INFO.
 """
 
 from collections.abc import Iterator
-from pathlib import Path
 
-import pandas as pd
 from datasets import load_dataset
 from loguru import logger
 

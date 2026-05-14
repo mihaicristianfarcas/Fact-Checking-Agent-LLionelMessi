@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Link as LinkIcon, Play, Quote, ScrollText, Code2 } from 'lucide-react';
+import { Link as LinkIcon, Quote, ScrollText, Code2 } from 'lucide-react';
 
 import { SlideShell, SlideHeader } from './components/SlideChrome';
 import { SchematicBox, BoxLabel } from './components/SchematicBox';
@@ -534,22 +534,10 @@ const Demo = () => (
 			<div className="flex-[1.7] hairline bg-[#0b2447] relative overflow-hidden">
 				<video
 					src="/demo.mp4"
-					autoPlay
-					muted
 					playsInline
-					controls={false}
+					controls
 					className="w-full h-full object-contain"
-					onError={(e) => {
-						(e.currentTarget.style.display = 'none');
-					}}
 				/>
-				{/* Placeholder shown if no video yet */}
-				<div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[#f5f7fb] pointer-events-none">
-					<Play size={48} className="text-[#0ea5e9]/60" strokeWidth={1.5} />
-					<span className="mono text-[12px] uppercase tracking-[0.22em] text-[#cbd5e1]">
-						demo.mp4 — drop into presentation/public/
-					</span>
-				</div>
 			</div>
 
 			<div className="w-[36%] flex flex-col gap-3">
@@ -621,7 +609,7 @@ const Close = () => (
 						<BoxLabel>code</BoxLabel>
 					</div>
 					<p className="mono text-[11px] text-[#0369a1] break-all leading-snug">
-						github.com/.../Fact-Checking-Agent-LLionelMessi
+						github.com/mihaicristianfarcas/Fact-Checking-Agent-LLionelMessi
 					</p>
 				</SchematicBox>
 				<SchematicBox variant="solid" className="p-4 rounded-sm">
@@ -645,15 +633,11 @@ const Close = () => (
 			</div>
 
 			<div className="flex items-center justify-center gap-4 mt-2">
-				<span className="mono text-[11px] uppercase tracking-[0.22em] text-[#64748b]">
-					questions
-				</span>
 				<span className="w-12 h-px bg-[#cbd5e1]" />
 				<span className="mono text-[11px] uppercase tracking-[0.22em] text-[#0ea5e9] font-bold">
-					thank you
+					thank you!
 				</span>
 				<span className="w-12 h-px bg-[#cbd5e1]" />
-				<ScrollText size={14} className="text-[#64748b]" />
 			</div>
 		</div>
 	</SlideShell>

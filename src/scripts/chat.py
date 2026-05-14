@@ -69,7 +69,7 @@ try:
 
     hf_logging.set_verbosity_error()
     hf_logging.disable_progress_bar()
-except Exception:
+except ImportError:
     pass
 
 console = Console(stderr=False)

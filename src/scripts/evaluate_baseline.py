@@ -18,7 +18,6 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
 from loguru import logger
 from sklearn.metrics import classification_report, confusion_matrix
 
@@ -34,34 +33,12 @@ from src.evaluation.fever_utils import (
     recall_at_k,
     serialize_gold_pages,
 )
+from src.evaluation.metrics import expected_calibration_error
 
 
 def predict_verdict(top_score: float, threshold: float) -> str:
     """Heuristic: high confidence -> SUPPORTED, low -> NOT_ENOUGH_INFO."""
     return "SUPPORTED" if top_score >= threshold else "NOT_ENOUGH_INFO"
-
-
-def expected_calibration_error(
-    confidences: list[float],
-    correct: list[bool],
-    n_bins: int = 10,
-) -> float:
-    """Compute ECE: weighted average |confidence - accuracy| across bins."""
-    bins = np.linspace(0.0, 1.0, n_bins + 1)
-    ece = 0.0
-    n = len(confidences)
-    conf_arr = np.array(confidences)
-    corr_arr = np.array(correct, dtype=float)
-
-    for lo, hi in zip(bins[:-1], bins[1:]):
-        mask = (conf_arr >= lo) & (conf_arr < hi)
-        if mask.sum() == 0:
-            continue
-        bin_conf = conf_arr[mask].mean()
-        bin_acc = corr_arr[mask].mean()
-        ece += (mask.sum() / n) * abs(bin_conf - bin_acc)
-
-    return float(ece)
 
 
 def parse_recall_ks(value: str) -> list[int]:

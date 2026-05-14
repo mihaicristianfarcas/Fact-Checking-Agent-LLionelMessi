@@ -18,8 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+from loguru import logger
+
 from src.data_ingestion.retriever.evidence_retriever import RetrievalResult
 from src.synthesis.verdict_synthesizer import AtomicVerdict, SynthesisResult
+from src.utils.text import display_fever_source
 
 VERIFIER_LABELS = ["SUPPORTED", "REFUTED", "NOT_ENOUGH_INFO"]
 LABEL_TO_ID = {label: idx for idx, label in enumerate(VERIFIER_LABELS)}
@@ -47,7 +50,7 @@ def build_evidence_text(
             break
 
         passage = retrieval.passage
-        source = _display_source(passage.source)
+        source = display_fever_source(passage.source)
         text = " ".join((passage.text or "").split())
         if not text:
             continue
@@ -95,18 +98,13 @@ class FeverVerdictVerifier:
         max_length: int = 384,
         temperature: float | None = None,
     ) -> None:
-        import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         from src.model_training.calibration import load_temperature_sidecar
+        from src.utils.device import pick_device
 
         if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
+            device = pick_device()
 
         self.model_path = model_path
         self.device = device
@@ -124,7 +122,10 @@ class FeverVerdictVerifier:
         if temperature is None:
             try:
                 sidecar = load_temperature_sidecar(model_path)
-            except Exception:
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Failed to load temperature sidecar from {}: {}", model_path, exc
+                )
                 sidecar = None
             self.temperature = sidecar if sidecar is not None else 1.0
         else:
@@ -344,15 +345,6 @@ def _build_verifier_explanation(
     )
 
 
-def _display_source(source: str) -> str:
-    return (
-        (source or "unknown")
-        .replace("_", " ")
-        .replace("-LRB-", "(")
-        .replace("-RRB-", ")")
-        .replace("-LSB-", "[")
-        .replace("-RSB-", "]")
-    )
 
 
 def _normalize_label(label: str) -> str:

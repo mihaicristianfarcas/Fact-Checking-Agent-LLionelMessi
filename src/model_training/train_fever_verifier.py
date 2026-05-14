@@ -12,11 +12,11 @@ Each row must contain:
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import inspect
 import json
 import logging
 import random
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -34,19 +34,10 @@ from transformers import (
 )
 
 from src.claim_processing.verdict_verifier import ID_TO_LABEL, LABEL_TO_ID
+from src.model_training.data_prep import load_jsonl
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    """Load verifier JSONL rows."""
-    rows: list[dict[str, Any]] = []
-    with Path(path).open("r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
 
 
 def validate_rows(rows: list[dict[str, Any]], *, path: str | Path) -> None:

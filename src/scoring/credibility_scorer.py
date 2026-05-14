@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.claim_processing.stance_classifier import PassageStance, StanceLabel, StanceResult
+from src.utils.coerce import metadata_float
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class CredibilityScorer:
 
     def _source_relevance_factor(self, ps: PassageStance) -> float:
         """Return a multiplier from retriever source relevance metadata."""
-        relevance = _metadata_float(ps.passage_metadata, "source_relevance", 0.5)
+        relevance = metadata_float(ps.passage_metadata, "source_relevance", 0.5)
         relevance = max(0.0, min(1.0, relevance))
 
         # Contradictions from fuzzy title matches are the main observed error
@@ -147,8 +148,3 @@ class CredibilityScorer:
         return 0.60 + 0.40 * relevance
 
 
-def _metadata_float(metadata: dict, key: str, default: float) -> float:
-    try:
-        return float(metadata.get(key, default))
-    except (TypeError, ValueError):
-        return default

@@ -44,12 +44,9 @@ def _collect_logits(
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
+    from src.utils.device import pick_device
+
+    device = pick_device()
     logger.info("Loading {} on {}", model_path, device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)

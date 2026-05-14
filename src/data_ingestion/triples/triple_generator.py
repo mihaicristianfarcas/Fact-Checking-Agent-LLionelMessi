@@ -7,13 +7,12 @@ datasets for use in fine-tuning and evaluation.
 import json
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
-from ..datasets.base import Claim, ClaimEvidenceTriple, EvidencePassage, Verdict
+from ..datasets.base import ClaimEvidenceTriple, Verdict
 from ..datasets.fever import FeverDataset
 from ..datasets.politifact import PolitifactDataset
 

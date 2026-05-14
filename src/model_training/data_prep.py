@@ -2,7 +2,7 @@ import json
 import logging
 import random
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, List
 from datasets import Dataset
 
 from src.model_training.prompting import SYSTEM_PROMPT, build_user_prompt
@@ -230,17 +230,3 @@ def prepare_dpo_dataset(input_filepath: str | Path, max_samples: int = None) -> 
 
     logger.info(f"Prepared DPO dataset with {len(dpo_data)} preference pairs.")
     return Dataset.from_list(dpo_data)
-
-if __name__ == "__main__":
-    test_path = Path("data/processed/val.jsonl")
-    if test_path.exists():
-        print("Testing SFT Prep (first 2 samples):")
-        ds_sft = prepare_sft_dataset(test_path, max_samples=2)
-        print(ds_sft[0]['messages'])
-        
-        print("\nTesting DPO Prep (first 2 samples):")
-        ds_dpo = prepare_dpo_dataset(test_path, max_samples=20) # Need enough to find some NEI samples
-        if len(ds_dpo) > 0:
-            print("Prompt:", ds_dpo[0]['prompt'])
-            print("Chosen:", ds_dpo[0]['chosen'])
-            print("Rejected:", ds_dpo[0]['rejected'])

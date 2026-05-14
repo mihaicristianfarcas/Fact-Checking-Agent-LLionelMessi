@@ -12,9 +12,7 @@ HuggingFace schema note (fever/fever, v1.0):
   NOT ENOUGH INFO rows have evidence_wiki_url='' and evidence_sentence_id=-1.
 """
 
-from collections import defaultdict
 from collections.abc import Iterator
-from typing import Any
 
 from datasets import load_dataset
 from loguru import logger

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from src.claim_processing.stance_classifier import StanceLabel, StanceResult
 from src.scoring.credibility_scorer import CredibilityScorer, ScoredPassage
+from src.utils.coerce import metadata_float
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ class VerdictSynthesizer:
             all_retrieved_ids=all_retrieved_ids,
         )
 
-        logger.info(
+        logger.debug(
             "Synthesis: %r -> %s (conf=%.3f, %d citations, halluc=%.2f%%)",
             original_claim[:60],
             verdict,
@@ -429,8 +430,8 @@ class VerdictSynthesizer:
             return False
 
         metadata = sp.stance.passage_metadata
-        rerank_score = _metadata_float(metadata, "rerank_score", sp.stance.retrieval_score)
-        title_score = _metadata_float(metadata, "title_score", 0.0)
+        rerank_score = metadata_float(metadata, "rerank_score", sp.stance.retrieval_score)
+        title_score = metadata_float(metadata, "title_score", 0.0)
         return (
             sp.stance.confidence >= 0.80
             or rerank_score >= 0.75
@@ -438,7 +439,7 @@ class VerdictSynthesizer:
         )
 
     def _source_relevance(self, sp: ScoredPassage) -> float:
-        return _metadata_float(sp.stance.passage_metadata, "source_relevance", 0.5)
+        return metadata_float(sp.stance.passage_metadata, "source_relevance", 0.5)
 
     def _collect_citations(self, atomic_verdicts: list[AtomicVerdict]) -> list[str]:
         """Deduplicated list of all cited passage IDs."""
@@ -484,8 +485,3 @@ class VerdictSynthesizer:
         return header + " ".join(parts)
 
 
-def _metadata_float(metadata: dict, key: str, default: float) -> float:
-    try:
-        return float(metadata.get(key, default))
-    except (TypeError, ValueError):
-        return default

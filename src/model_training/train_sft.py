@@ -7,7 +7,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
@@ -20,16 +20,10 @@ def main(args):
     model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     logger.info(f"Using base model: {model_id}")
 
-    # Check hardware — CUDA > MPS (Apple Silicon) > CPU
-    has_cuda = torch.cuda.is_available()
-    has_mps = torch.backends.mps.is_available()
-    if has_cuda:
-        device = "cuda"
-    elif has_mps:
-        device = "mps"
-    else:
-        device = "cpu"
-    logger.info(f"Hardware detection: CUDA={has_cuda}, MPS={has_mps} → using {device.upper()}")
+    from src.utils.device import pick_device
+
+    device = pick_device()
+    logger.info(f"Using device: {device.upper()}")
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
